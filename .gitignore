@@ -1,0 +1,68 @@
+# --- VaultMCP artifacts ---
+# Local vault directory (if ever symlinked/copied in)
+.vaultmcp/
+store.enc
+audit.log
+meta.json
+.unlocked
+config.json
+
+# --- Common secret / credential files ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+*.kdbx
+credentials
+credentials.json
+service-account*.json
+aws-credentials
+.aws/credentials
+.netrc
+
+# --- Claude local overrides (keep project settings, ignore machine-local) ---
+.claude/settings.local.json
+.remember/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.venv/
+venv/
+env/
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- Build / distribution ---
+build/
+dist/
+*.tar.gz
+
+# --- Inbound artifacts ---
+files.zip
+*.dmg
+*.pkg
