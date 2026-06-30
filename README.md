@@ -1,207 +1,102 @@
 # VaultMCP
 
-Credential security for Claude Code. Intercepts secrets before they hit your session transcript.
+Keep credentials out of Claude Code's transcript. VaultMCP is a single Go binary that runs as a Claude Code hook, detects secrets before they reach the conversation, and swaps them for aliases. Claude does its job; it just never sees the raw value.
 
-## How it works
-
-VaultMCP runs as a Claude Code `PreToolUse` hook. Every time Claude is about to execute a tool, the hook scans the payload for credentials using two methods:
-
-1. **Known pattern matching** — AWS keys, GitHub tokens, OpenAI keys, JWTs, DB connection strings, private keys, and more
-2. **Shannon entropy scoring** — catches custom internal API keys and any high-randomness string that looks like a secret, even with no known prefix
-
-When a credential is detected:
-- It's stored in an encrypted local vault (`~/.vaultmcp/store.enc`)
-- Replaced with a human-readable alias like `[vault:AWS_ACCESS_KEY]`
-- Claude receives the alias, not the value
-- An append-only audit entry is written
-
-Claude can still do its job — it just never sees the raw credential.
-
----
+Works on **macOS, Linux, and Windows** — one static binary, no runtime to install.
 
 ## Install
 
 ```bash
-git clone https://github.com/yourname/vaultmcp
-cd vaultmcp
-bash setup.sh
+go install github.com/dubb-b/vaultmcp@latest
+vaultmcp install
 ```
 
-That's it. The setup script:
-- Detects your Python version
-- Detects your platform (macOS keychain, Linux libsecret, or encrypted file)
-- Registers the hook in your Claude Code settings
-- Creates a `vaultmcp` CLI command
+`vaultmcp install` registers the hooks in your Claude Code `settings.json` (idempotent). That's it — VaultMCP now intercepts credentials in every session.
 
----
+No Go toolchain? Grab a prebuilt binary from the releases page, put it on your `PATH`, and run `vaultmcp install`.
+
+## How it works
+
+VaultMCP registers two Claude Code hooks:
+
+- **PreToolUse** — scans tool inputs before they run. A detected secret is vaulted and replaced:
+  - In **Bash** commands → `$(vaultmcp get ALIAS)`, a command substitution. The transcript shows the harmless `$(...)`; your shell resolves the real value only at execution time (like `op run` / `doppler run`).
+  - In other tools → a `[vault:ALIAS]` placeholder.
+- **PostToolUse** — scans tool *results* (e.g. when Claude runs `cat .env`) and redacts secrets to `[vault:ALIAS]` before Claude ever sees them.
+
+Detection is two-layered: **known-pattern regexes** (AWS, GitHub, OpenAI, Anthropic, Slack, Stripe, JWTs, DB URLs, private keys) **plus a Shannon-entropy scan** that catches custom, high-randomness secrets no regex would know.
+
+If VaultMCP ever errors, it **fails open** — the tool call proceeds untouched. A bug here can never break Claude Code.
 
 ## Usage
 
-### Automatic (the whole point)
-
-Just use Claude Code normally. If you type or paste a credential, VaultMCP intercepts it automatically. Claude sees `[vault:ALIAS]` instead.
-
-### Manual secret management
-
 ```bash
-# Store a secret manually
-vaultmcp set STRIPE_KEY
-
-# List all aliases (no values shown)
-vaultmcp list
-
-# Retrieve a value (for piping into scripts)
-vaultmcp get STRIPE_KEY
-
-# Delete a secret
-vaultmcp delete STRIPE_KEY
-
-# Check vault health
-vaultmcp status
-
-# View audit log
-vaultmcp audit
-vaultmcp audit --last 50
-
-# Unlock for this terminal session (skips per-use prompts)
-vaultmcp unlock
-
-# Lock (clear cached passphrase)
-vaultmcp lock
+vaultmcp set STRIPE_KEY          # store a secret (prompts — no echo)
+vaultmcp get STRIPE_KEY          # print a value (pipe-friendly)
+vaultmcp list                    # list aliases (values masked)
+vaultmcp delete STRIPE_KEY       # remove a secret
+vaultmcp status                  # vault + hook health
+vaultmcp audit --last 50         # view the hash-chained audit log
+vaultmcp unlock                  # cache the key for this machine
+vaultmcp lock                    # clear the cached key
+vaultmcp export-aliases          # print alias list for CLAUDE.md
 ```
 
-### Reference aliases in Claude prompts
-
-Instead of pasting a key, just use the alias directly in your message:
+Reference an alias directly in a prompt:
 
 ```
-Use [vault:AWS_ACCESS_KEY] and [vault:AWS_SECRET] to deploy the Lambda function
+Deploy the Lambda using [vault:AWS_ACCESS_KEY] and [vault:AWS_SECRET]
 ```
 
-Claude will call `run_with_secrets` (Layer 2, coming soon) to inject the values at execution time.
+In a Bash tool call, the alias resolves to the real value at execution; the value never appears in the conversation.
 
----
+## Unlocking the vault
 
-## Vault storage
+The master key that encrypts your vault lives in your **OS keychain** by default — macOS Keychain, Windows Credential Manager, or Linux Secret Service (via `go-keyring`). Nothing secret touches disk.
 
-Secrets are stored in `~/.vaultmcp/store.enc`:
+**Headless or no keychain** (e.g. a Linux server with no Secret Service): VaultMCP falls back to **passphrase mode**. The master key is wrapped by an Argon2id-derived key in `~/.vaultmcp/key.enc` (your passphrase is never written to disk). For non-interactive use, set:
 
-- Key derived via **PBKDF2-HMAC-SHA256** (260,000 iterations)
-- Encrypted with a **HMAC-based stream cipher** using stdlib only (no pip install)
-- MAC-authenticated — tampered stores are rejected
-- File permissions: `600` (owner read/write only)
-
-On macOS, the vault directory is `~/.vaultmcp/` with `700` permissions.
-
-### Passphrase options
-
-**Option 1 — prompt on first use (default)**
-VaultMCP prompts once per terminal session and caches for the session.
-
-**Option 2 — env var (convenience tradeoff)**
 ```bash
 export VAULTMCP_KEY="your-passphrase"
 ```
-Add to your `~/.zshrc` or `~/.bashrc`. Understand the tradeoff: anyone who can read your environment can read your passphrase.
 
----
+Understand the tradeoff: anyone who can read your environment can read that passphrase.
 
 ## What gets detected
 
-| Type | Example pattern |
+| Type | Pattern |
 |---|---|
-| AWS access key | `AKIA...` |
-| GitHub token | `ghp_...`, `ghs_...` |
-| OpenAI key | `sk-...` |
-| Anthropic key | `sk-ant-...` |
-| Slack token | `xoxb-...`, `xoxp-...` |
-| Stripe key | `stripe_sk_live_...` |
-| Private key | `-----BEGIN ... PRIVATE KEY-----` |
-| JWT | `eyJ...` (three-part) |
-| DB connection string | `postgres://user:pass@...` |
-| Redis URL | `redis://:pass@...` |
-| MongoDB URI | `mongodb://user:pass@...` |
-| **Any high-entropy string** | 20+ chars, >3.5 bits/char Shannon entropy |
+| AWS access key | `AKIA…` |
+| GitHub token | `ghp_…`, `ghs_…` |
+| OpenAI / Anthropic key | `sk-…`, `sk-ant-…` |
+| Slack token | `xoxb-…`, `xoxp-…` |
+| Stripe key | `stripe_sk_live_…` |
+| Private key | `-----BEGIN … PRIVATE KEY-----` |
+| JWT | `eyJ….….…` |
+| DB / Redis / Mongo URI | `postgres://…:…@`, `redis://…@`, … |
+| **Any high-entropy string** | 20+ chars, ≥3.5 bits/char Shannon entropy |
 
-The last row is the important one — it catches custom internal API keys that no regex would know about.
+Not flagged: URLs, `${VARS}`, `$(cmd)`, existing `[vault:…]` aliases, UUIDs, long file paths, and ordinary prose.
 
----
+## Security design
 
-## What does NOT get flagged
+- **Encryption:** XChaCha20-Poly1305 (AEAD) — a 24-byte random nonce per write, encrypt-then-authenticate. Tampered stores are rejected.
+- **Key derivation:** Argon2id (64 MiB, t=3) — memory-hard, well beyond PBKDF2.
+- **Key storage:** OS keychain, or an Argon2id-wrapped key file. Never a plaintext passphrase on disk.
+- **At rest:** `~/.vaultmcp/` is `0700`, `store.enc` is `0600`.
+- **Audit:** every vault operation is logged to `~/.vaultmcp/audit.log`, hash-chained so tampering is detectable. Values are never logged — only alias names.
 
-- URLs (`https://...`)
-- Template variables (`${MY_VAR}`, `$(command)`)
-- UUIDs
-- Existing vault aliases (`[vault:...]`)
-- Strings shorter than 20 characters
-- Normal English text (low entropy)
+Run `vaultmcp audit` to review.
 
----
-
-## Audit log
-
-Every vault operation is logged to `~/.vaultmcp/audit.log`:
-
-```json
-{"ts": "2026-04-14T10:23:11Z", "action": "vault", "alias": "AWS_ACCESS_KEY", "context": "Bash", "chain": "a3f9b2c1"}
-```
-
-Entries are hash-chained — each entry includes a hash of the previous entry, making tampering detectable.
-
-View with `vaultmcp audit`.
-
----
-
-## Claude Code settings
-
-VaultMCP adds this to your `.claude/settings.json`:
-
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": ".*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 /path/to/vaultmcp/hook.py"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-The hook receives every tool call as JSON on stdin and returns a (possibly mutated) JSON response. If VaultMCP errors for any reason, it fails open — Claude Code continues normally.
-
----
-
-## Running tests
+## Build from source
 
 ```bash
-python3 test_vaultmcp.py
+git clone https://github.com/dubb-b/vaultmcp
+cd vaultmcp
+go build -o vaultmcp .   # Go 1.26+ (pinned via .go-version)
+./vaultmcp install
 ```
-
-Tests cover:
-- Entropy scoring accuracy
-- All known credential pattern detectors
-- Allowlist (things that should NOT be flagged)
-- Encrypt/decrypt round-trip
-- Tamper detection
-- Full hook flow with real payloads
-- Audit log chain integrity
-
----
-
-## Roadmap
-
-- **Layer 2** — Go binary, OS keychain backend, `run_with_secrets` MCP tool
-- **Layer 3** — OIDC agent identity, cloud federation, team vaults
-
----
 
 ## Philosophy
 
-Secrets should never appear in an AI's context window. Not because we don't trust the AI — because the context window is a transcript, and transcripts get stored, logged, and leaked. VaultMCP makes the secure path the path of least resistance.
+Secrets should never appear in an AI's context window — not because the AI isn't trusted, but because the context window is a transcript, and transcripts get stored, logged, and leaked. VaultMCP makes the secure path the path of least resistance.

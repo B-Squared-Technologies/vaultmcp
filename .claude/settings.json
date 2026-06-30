@@ -1,14 +1,25 @@
 {
   "hooks": {
-    "PreToolUse": [
+    "PostToolUse": [
       {
-        "matcher": ".*",
         "hooks": [
           {
-            "type": "command",
-            "command": "python3 /Users/b-squaredtechnologies/gitrepos/vaultmcp/hook.py"
+            "command": "/Users/b-squaredtechnologies/go/1.26.4/bin/vaultmcp hook",
+            "type": "command"
           }
-        ]
+        ],
+        "matcher": ".*"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "/Users/b-squaredtechnologies/go/1.26.4/bin/vaultmcp hook",
+            "type": "command"
+          }
+        ],
+        "matcher": ".*"
       }
     ]
   }
