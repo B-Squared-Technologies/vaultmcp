@@ -7,7 +7,7 @@ Works on **macOS, Linux, and Windows** — one static binary, no runtime to inst
 ## Install
 
 ```bash
-go install github.com/dubb-b/vaultmcp@latest
+go install github.com/B-Squared-Technologies/vaultmcp@latest
 vaultmcp install
 ```
 
@@ -91,7 +91,7 @@ Run `vaultmcp audit` to review.
 ## Build from source
 
 ```bash
-git clone https://github.com/dubb-b/vaultmcp
+git clone https://github.com/B-Squared-Technologies/vaultmcp
 cd vaultmcp
 go build -o vaultmcp .   # Go 1.26+ (pinned via .go-version)
 ./vaultmcp install

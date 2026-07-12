@@ -13,7 +13,7 @@ import (
 	"errors"
 	"os"
 
-	"github.com/dubb-b/vaultmcp/internal/crypto"
+	"github.com/B-Squared-Technologies/vaultmcp/internal/crypto"
 	zk "github.com/zalando/go-keyring"
 )
 

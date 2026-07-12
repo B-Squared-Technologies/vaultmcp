@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/dubb-b/vaultmcp/internal/crypto"
+	"github.com/B-Squared-Technologies/vaultmcp/internal/crypto"
 )
 
 // Store maps alias -> secret value.

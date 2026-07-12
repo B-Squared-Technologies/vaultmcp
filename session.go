@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/dubb-b/vaultmcp/internal/crypto"
-	"github.com/dubb-b/vaultmcp/internal/keyring"
-	"github.com/dubb-b/vaultmcp/internal/vault"
+	"github.com/B-Squared-Technologies/vaultmcp/internal/crypto"
+	"github.com/B-Squared-Technologies/vaultmcp/internal/keyring"
+	"github.com/B-Squared-Technologies/vaultmcp/internal/vault"
 	"golang.org/x/term"
 )
 

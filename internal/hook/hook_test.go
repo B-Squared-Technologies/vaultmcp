@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dubb-b/vaultmcp/internal/crypto"
-	"github.com/dubb-b/vaultmcp/internal/vault"
+	"github.com/B-Squared-Technologies/vaultmcp/internal/crypto"
+	"github.com/B-Squared-Technologies/vaultmcp/internal/vault"
 )
 
 const fakeExe = "/usr/local/bin/vaultmcp"

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/dubb-b/vaultmcp/internal/keyring"
+	"github.com/B-Squared-Technologies/vaultmcp/internal/keyring"
 )
 
 // keyringReady reports whether the OS keychain is usable here.

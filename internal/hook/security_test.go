@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dubb-b/vaultmcp/internal/vault"
+	"github.com/B-Squared-Technologies/vaultmcp/internal/vault"
 )
 
 // The central security guarantee: once a secret is vaulted, its plaintext must

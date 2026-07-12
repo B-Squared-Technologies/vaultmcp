@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/dubb-b/vaultmcp/internal/crypto"
+	"github.com/B-Squared-Technologies/vaultmcp/internal/crypto"
 )
 
 func tempPaths(t *testing.T) Paths {

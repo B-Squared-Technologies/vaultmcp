@@ -22,9 +22,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dubb-b/vaultmcp/internal/audit"
-	"github.com/dubb-b/vaultmcp/internal/detect"
-	"github.com/dubb-b/vaultmcp/internal/vault"
+	"github.com/B-Squared-Technologies/vaultmcp/internal/audit"
+	"github.com/B-Squared-Technologies/vaultmcp/internal/detect"
+	"github.com/B-Squared-Technologies/vaultmcp/internal/vault"
 )
 
 const bashTool = "Bash"

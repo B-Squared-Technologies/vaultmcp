@@ -1,4 +1,4 @@
-module github.com/dubb-b/vaultmcp
+module github.com/B-Squared-Technologies/vaultmcp
 
 go 1.26.4
 

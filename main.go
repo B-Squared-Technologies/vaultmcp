@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dubb-b/vaultmcp/internal/audit"
-	"github.com/dubb-b/vaultmcp/internal/hook"
-	"github.com/dubb-b/vaultmcp/internal/keyring"
-	"github.com/dubb-b/vaultmcp/internal/vault"
+	"github.com/B-Squared-Technologies/vaultmcp/internal/audit"
+	"github.com/B-Squared-Technologies/vaultmcp/internal/hook"
+	"github.com/B-Squared-Technologies/vaultmcp/internal/keyring"
+	"github.com/B-Squared-Technologies/vaultmcp/internal/vault"
 	"golang.org/x/term"
 )
 

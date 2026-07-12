@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/dubb-b/vaultmcp/internal/crypto"
+	"github.com/B-Squared-Technologies/vaultmcp/internal/crypto"
 )
 
 // These tests cover passphrase-mode key persistence (WrapToFile/UnwrapFromFile)
