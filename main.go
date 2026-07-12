@@ -16,6 +16,7 @@ import (
 	"github.com/dubb-b/vaultmcp/internal/hook"
 	"github.com/dubb-b/vaultmcp/internal/keyring"
 	"github.com/dubb-b/vaultmcp/internal/vault"
+	"golang.org/x/term"
 )
 
 const usage = `vaultmcp — keep secrets out of Claude Code's transcript
@@ -24,7 +25,7 @@ Usage:
   vaultmcp set <alias> [value]   Store a secret (prompts for value if omitted)
   vaultmcp get <alias>           Print a secret value (pipe-friendly)
   vaultmcp list                  List aliases (values masked)
-  vaultmcp delete <alias>        Remove a secret
+  vaultmcp delete <alias> [--yes]  Remove a secret (--yes skips the confirm)
   vaultmcp status                Show vault + hook health
   vaultmcp audit [--last N]      Show the audit log
   vaultmcp unlock                Cache the key for this machine/session
@@ -171,8 +172,12 @@ func cmdGet(args []string) error {
 		return fmt.Errorf("no secret for alias [%s]", alias)
 	}
 	_ = audit.Log(p.Audit, "get", alias, "cli", time.Now())
-	// Raw value only, no newline decoration, so $(vaultmcp get X) is clean.
+	// Raw value when piped, so $(vaultmcp get X) is clean; add a newline on a
+	// terminal so the shell prompt doesn't run into the value.
 	fmt.Print(val)
+	if term.IsTerminal(int(os.Stdout.Fd())) {
+		fmt.Println()
+	}
 	return nil
 }
 
@@ -200,10 +205,21 @@ func cmdList(args []string) error {
 }
 
 func cmdDelete(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: vaultmcp delete <alias>")
+	var alias string
+	yes := false
+	for _, a := range args {
+		switch a {
+		case "--yes", "-y":
+			yes = true
+		default:
+			if alias == "" {
+				alias = normalizeAlias(a)
+			}
+		}
 	}
-	alias := normalizeAlias(args[0])
+	if alias == "" {
+		return fmt.Errorf("usage: vaultmcp delete <alias> [--yes]")
+	}
 	p := paths()
 	key, err := masterKeyInteractive(p, false)
 	if err != nil {
@@ -216,12 +232,14 @@ func cmdDelete(args []string) error {
 	if _, ok := store[alias]; !ok {
 		return fmt.Errorf("[%s] not found", alias)
 	}
-	fmt.Printf("  delete [%s]? (yes/no): ", alias)
-	var confirm string
-	_, _ = fmt.Scanln(&confirm)
-	if strings.ToLower(strings.TrimSpace(confirm)) != "yes" {
-		fmt.Println("  cancelled")
-		return nil
+	if !yes {
+		fmt.Printf("  delete [%s]? (yes/no): ", alias)
+		var confirm string
+		_, _ = fmt.Scanln(&confirm)
+		if strings.ToLower(strings.TrimSpace(confirm)) != "yes" {
+			fmt.Println("  cancelled")
+			return nil
+		}
 	}
 	delete(store, alias)
 	if err := vault.Save(p.Store, store, key); err != nil {

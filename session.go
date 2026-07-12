@@ -50,15 +50,18 @@ func masterKeyInteractive(p vault.Paths, create bool) ([]byte, error) {
 	}
 	k := crypto.NewKey()
 	if keyring.Available() {
-		if err := keyring.ToKeychain(k); err != nil {
-			return nil, err
+		if err := keyring.ToKeychain(k); err == nil {
+			return k, nil
 		}
-		return k, nil
+		// Available() probed true but the write still failed (e.g. a locked
+		// keychain in an SSH session). Fall back rather than hard-fail.
+		fmt.Fprintln(os.Stderr, "  warning: keychain write failed — using passphrase mode.")
+	} else {
+		fmt.Fprintln(os.Stderr, "  No OS keychain available — using passphrase mode.")
 	}
-	fmt.Fprintln(os.Stderr, "  No OS keychain available — using passphrase mode.")
 	pass, err := passphrase("Create passphrase: ", true)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("cannot prompt for a passphrase here — set VAULTMCP_KEY for headless use")
 	}
 	if err := keyring.WrapToFile(p.Key, k, pass); err != nil {
 		return nil, err

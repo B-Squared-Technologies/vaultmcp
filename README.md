@@ -34,7 +34,7 @@ If VaultMCP ever errors, it **fails open** — the tool call proceeds untouched.
 vaultmcp set STRIPE_KEY          # store a secret (prompts — no echo)
 vaultmcp get STRIPE_KEY          # print a value (pipe-friendly)
 vaultmcp list                    # list aliases (values masked)
-vaultmcp delete STRIPE_KEY       # remove a secret
+vaultmcp delete STRIPE_KEY       # remove a secret (--yes to skip confirm)
 vaultmcp status                  # vault + hook health
 vaultmcp audit --last 50         # view the hash-chained audit log
 vaultmcp unlock                  # cache the key for this machine

@@ -25,13 +25,14 @@ func cmdStatus(args []string) error {
 		fmt.Println("  store:   not initialized (run 'vaultmcp set')")
 	}
 
-	// Session / key
+	// Session / key — mirror the resolver's precedence: VAULTMCP_KEY wins
+	// over the keychain, so report it first.
 	_, inKeychain := keyring.FromKeychain()
 	switch {
+	case os.Getenv("VAULTMCP_KEY") != "":
+		fmt.Println("  session: unlocked (VAULTMCP_KEY)")
 	case inKeychain:
 		fmt.Println("  session: unlocked (OS keychain)")
-	case os.Getenv("VAULTMCP_KEY") != "":
-		fmt.Println("  session: VAULTMCP_KEY set")
 	case fileExists(p.Key):
 		fmt.Println("  session: locked (passphrase mode — run 'vaultmcp unlock')")
 	default:
