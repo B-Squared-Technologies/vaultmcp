@@ -91,6 +91,16 @@ func containsSeen(tok string, seen map[string]bool) bool {
 	return false
 }
 
+func digitCount(s string) int {
+	n := 0
+	for _, c := range s {
+		if c >= '0' && c <= '9' {
+			n++
+		}
+	}
+	return n
+}
+
 func isAllowlisted(tok string) bool {
 	for _, re := range allowlist {
 		if re.MatchString(tok) {
@@ -131,6 +141,13 @@ func Find(text string) []Match {
 			continue
 		}
 		if len(val) < minTokenLen || len(val) > maxTokenLen {
+			continue
+		}
+		// Code identifiers (camelCase, PascalCase, dotted member access) routinely
+		// clear the entropy bar but are not secrets — they corrupted agent edits
+		// when vaulted. Random key material virtually always carries digits, so
+		// require a couple before the entropy test may fire.
+		if digitCount(val) < 2 {
 			continue
 		}
 		// Skip a token that merely *contains* a secret we already matched (e.g.

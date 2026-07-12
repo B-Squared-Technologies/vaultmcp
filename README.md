@@ -74,7 +74,7 @@ Understand the tradeoff: anyone who can read your environment can read that pass
 | Private key | `-----BEGIN … PRIVATE KEY-----` |
 | JWT | `eyJ….….…` |
 | DB / Redis / Mongo URI | `postgres://…:…@`, `redis://…@`, … |
-| **Any high-entropy string** | 20+ chars, ≥3.5 bits/char Shannon entropy |
+| **Any high-entropy string** | 20+ chars, ≥3.5 bits/char Shannon entropy, ≥2 digits (code identifiers exempt) |
 
 Not flagged: URLs, `${VARS}`, `$(cmd)`, existing `[vault:…]` aliases, UUIDs, long file paths, and ordinary prose.
 

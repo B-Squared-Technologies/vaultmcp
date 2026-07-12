@@ -75,6 +75,33 @@ func TestLongPathNotFlaggedAsSecret(t *testing.T) {
 	}
 }
 
+func TestCodeIdentifiersNotFlagged(t *testing.T) {
+	// Real corruption cases from autonomous-agent sessions (2026-07-12): the
+	// entropy scan vaulted ordinary code identifiers and rewrote source files
+	// mid-edit. Identifiers are digit-free; random key material almost never is.
+	clean := []string{
+		"BSquaredWorkClientConfig",
+		"process.env.GRIPHQ_API_URL",
+		"process.env.BSQUARED_WORK_TENANT_ID",
+		"listPendingApprovalsForTenant",
+		"createBSquaredWorkClient(config)",
+		"const bsquaredWorkRequestHandler = makeHandler",
+	}
+	for _, c := range clean {
+		if got := Find(c); len(got) != 0 {
+			t.Errorf("identifier %q wrongly flagged: %+v", c, got)
+		}
+	}
+}
+
+func TestDigitBearingSecretStillCaught(t *testing.T) {
+	// The digit gate must not blind the entropy layer to real key material.
+	text := "export TOKEN=dEadBeefCafe1234x90abQdef1p34zz7"
+	if got := Find(text); !hasType(got, "high_entropy_secret") {
+		t.Errorf("expected high_entropy_secret, got %+v", got)
+	}
+}
+
 func TestShortStringsIgnored(t *testing.T) {
 	if got := Find("abc123 short tokens xyz"); len(got) != 0 {
 		t.Errorf("expected no matches for short tokens, got %+v", got)
