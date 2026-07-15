@@ -56,8 +56,8 @@ type preOutput struct {
 
 type postOutput struct {
 	HookSpecificOutput struct {
-		HookEventName     string `json:"hookEventName"`
-		UpdatedToolOutput string `json:"updatedToolOutput"`
+		HookEventName     string          `json:"hookEventName"`
+		UpdatedToolOutput json.RawMessage `json:"updatedToolOutput"`
 	} `json:"hookSpecificOutput"`
 }
 
@@ -166,30 +166,43 @@ func (d Deps) postToolUse(env envelope) []byte {
 	if err != nil {
 		return nil
 	}
-	// tool_response is usually a JSON string (e.g. Bash stdout). Unwrap it so we
-	// redact the decoded text and emit a single-encoded string — not a string
-	// that still carries its outer JSON quotes (which would double-encode).
-	text := string(env.ToolResp)
-	var unwrapped string
-	if json.Unmarshal(env.ToolResp, &unwrapped) == nil {
-		text = unwrapped
-	}
-	matches := detect.Find(text)
-	if len(matches) == 0 {
-		return nil
+	// Claude Code validates updatedToolOutput against the tool's OWN output
+	// schema, so we must emit the same shape we received: a Bash result stays
+	// {stdout,stderr,…}, a plain-string result stays a string. Emitting a bare
+	// string for an object-shaped result is rejected ("does not match <Tool>'s
+	// output shape") and the redaction is dropped. Parse into a generic value
+	// and redact every string it contains, preserving structure.
+	var resp any
+	if err := json.Unmarshal(env.ToolResp, &resp); err != nil {
+		return nil // not JSON we can safely rewrite — fail open
 	}
 	created := false
+	changed := false
 	var rawSecrets []string
-	for _, match := range matches {
-		alias, isNew := vault.SetByValue(store, match.Value, match.Type)
-		if isNew {
-			created = true
-			_ = audit.Log(d.Paths.Audit, "vault", alias, env.ToolName, d.Now)
+	var redacted []string
+	redact := func(s string) string {
+		for _, match := range detect.Find(s) {
+			alias, isNew := vault.SetByValue(store, match.Value, match.Type)
+			if isNew {
+				created = true
+				_ = audit.Log(d.Paths.Audit, "vault", alias, env.ToolName, d.Now)
+			}
+			if ns := strings.ReplaceAll(s, match.Value, "[vault:"+alias+"]"); ns != s {
+				s = ns
+				changed = true
+			}
+			rawSecrets = append(rawSecrets, match.Value)
 		}
-		text = strings.ReplaceAll(text, match.Value, "[vault:"+alias+"]")
-		rawSecrets = append(rawSecrets, match.Value)
+		redacted = append(redacted, s)
+		return s
 	}
-	if leaks(text, rawSecrets) {
+	resp = walkStrings(resp, redact)
+	if !changed {
+		return nil
+	}
+	// Safety invariant: never emit a payload where a raw secret survived
+	// replacement (\x00 keeps a value from matching across two fields).
+	if leaks(strings.Join(redacted, "\x00"), rawSecrets) {
 		return nil
 	}
 	if created {
@@ -198,15 +211,40 @@ func (d Deps) postToolUse(env envelope) []byte {
 			return nil
 		}
 	}
+	redactedResp, err := json.Marshal(resp)
+	if err != nil {
+		return nil
+	}
 
 	var out postOutput
 	out.HookSpecificOutput.HookEventName = "PostToolUse"
-	out.HookSpecificOutput.UpdatedToolOutput = text
+	out.HookSpecificOutput.UpdatedToolOutput = json.RawMessage(redactedResp)
 	b, err := json.Marshal(out)
 	if err != nil {
 		return nil
 	}
 	return b
+}
+
+// walkStrings returns v with f applied to every string it contains, recursing
+// through JSON objects and arrays so the overall shape is preserved.
+func walkStrings(v any, f func(string) string) any {
+	switch x := v.(type) {
+	case string:
+		return f(x)
+	case map[string]any:
+		for k, val := range x {
+			x[k] = walkStrings(val, f)
+		}
+		return x
+	case []any:
+		for i, val := range x {
+			x[i] = walkStrings(val, f)
+		}
+		return x
+	default:
+		return v
+	}
 }
 
 // leaks reports whether any raw secret value still appears in text — the guard
