@@ -107,12 +107,47 @@ func TestPostToolUseRedactsResult(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
 		t.Fatalf("not valid hook JSON: %v", err)
 	}
-	got := parsed.HookSpecificOutput.UpdatedToolOutput
-	// Must be the cleanly-decoded redacted string — NOT double-encoded with
-	// literal surrounding JSON quotes (the regression the reviewer caught).
+	// A string-shaped tool_response stays a JSON string — decode it back and it
+	// must be the cleanly-redacted text, NOT double-encoded with literal quotes.
+	var got string
+	if err := json.Unmarshal(parsed.HookSpecificOutput.UpdatedToolOutput, &got); err != nil {
+		t.Fatalf("updatedToolOutput is not a JSON string: %v", err)
+	}
 	want := "AWS_KEY=[vault:AWS_ACCESS_KEY]\n"
 	if got != want {
 		t.Fatalf("updatedToolOutput = %q, want %q", got, want)
+	}
+}
+
+// TestPostToolUseRedactsObjectResult covers the real-world shape: Claude Code
+// passes structured tool output (Bash = {stdout,stderr,…}) and validates
+// updatedToolOutput against that schema. Emitting a bare string is rejected, so
+// the hook must redact inside the object and emit the SAME object shape.
+func TestPostToolUseRedactsObjectResult(t *testing.T) {
+	d := testDeps(t)
+	in := `{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_response":{"stdout":"AWS_KEY=` + awsKey + `\n","stderr":"","interrupted":false,"isImage":false}}`
+	out := string(Process([]byte(in), d))
+	if out == "" {
+		t.Fatal("expected redacted output")
+	}
+	if strings.Contains(out, awsKey) {
+		t.Fatalf("secret leaked in tool result: %s", out)
+	}
+	var parsed postOutput
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("not valid hook JSON: %v", err)
+	}
+	// updatedToolOutput MUST be an object matching the tool's output shape.
+	var obj map[string]any
+	if err := json.Unmarshal(parsed.HookSpecificOutput.UpdatedToolOutput, &obj); err != nil {
+		t.Fatalf("updatedToolOutput must be an object, got: %s", parsed.HookSpecificOutput.UpdatedToolOutput)
+	}
+	if obj["stdout"] != "AWS_KEY=[vault:AWS_ACCESS_KEY]\n" {
+		t.Fatalf("stdout not redacted: %v", obj["stdout"])
+	}
+	// Non-string fields are preserved untouched.
+	if obj["interrupted"] != false || obj["stderr"] != "" {
+		t.Fatalf("structure not preserved: %+v", obj)
 	}
 }
 
