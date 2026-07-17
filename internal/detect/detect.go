@@ -56,6 +56,15 @@ var allowlist = []*regexp.Regexp{
 	regexp.MustCompile(`localhost`),
 	regexp.MustCompile(`(?i)^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`), // UUID
 	regexp.MustCompile(`^[A-Z][A-Z0-9]*(_[A-Z0-9]+)+$`),                                      // SCREAMING_SNAKE env-var name, e.g. ${MY_VAR}
+	// Structural non-secrets that repeatedly false-positived in real sessions
+	// (2026-07: task UUIDs in prose, ISO timestamps in JSON, date-prefixed doc
+	// filenames, file:line code references — all got vaulted and corrupted
+	// written artifacts). These are shape allowlists for machine-formatted
+	// data, not key material; known-pattern secret regexes still run first.
+	regexp.MustCompile(`^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}`),         // ISO 8601 timestamp (any suffix)
+	regexp.MustCompile(`(?i)^\d{4}-\d{2}-\d{2}[-_][a-z0-9][a-z0-9._-]*$`), // date-prefixed slug/filename
+	regexp.MustCompile(`(?i)^[\w./-]+\.[a-z]{1,5}:\d+\)?$`),               // file.ext:line code reference
+	regexp.MustCompile(`(?i)^[a-z0-9]+([._-][a-z0-9]+)+\.[a-z]{1,5}$`),    // dotted/hyphenated filename, e.g. spider.config.template
 }
 
 // entropyTokens matches whitespace/punctuation-delimited candidate tokens. The
@@ -110,13 +119,21 @@ func isAllowlisted(tok string) bool {
 	return false
 }
 
-// looksLikePath rejects long filesystem paths, the dominant entropy false
-// positive (e.g. /tmp/some/deeply/nested/build/artifact path). A real secret
-// is rarely both path-shaped and very long.
+// fileExt matches a short trailing extension (".md", ".ts", ".config").
+var fileExt = regexp.MustCompile(`(?i)\.[a-z0-9]{1,6}$`)
+
+// looksLikePath rejects filesystem paths, the dominant entropy false
+// positive. Long or deeply-nested tokens are paths, and so is ANY
+// slash-separated token ending in a file extension — shallow repo-relative
+// paths ([vault:HIGH_ENTROPY_SECRET_1879]) burned us repeatedly. A real
+// secret is rarely slash-separated with a tidy extension.
 func looksLikePath(tok string) bool {
 	seps := strings.Count(tok, "/") + strings.Count(tok, `\`)
 	if seps == 0 {
 		return false
+	}
+	if fileExt.MatchString(tok) {
+		return true
 	}
 	return len(tok) > 80 || seps > 3
 }
@@ -137,6 +154,10 @@ func Find(text string) []Match {
 	}
 
 	for _, val := range entropyTokens.FindAllString(text, -1) {
+		// Sentence punctuation rides along in prose ("…task 44cb0f45-…-ef.")
+		// and defeats the anchored allowlist shapes — strip it before any
+		// check so a UUID followed by a period is still recognized as a UUID.
+		val = strings.TrimRight(val, ".,:;!?")
 		if seen[val] || isAllowlisted(val) || looksLikePath(val) {
 			continue
 		}

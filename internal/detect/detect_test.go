@@ -136,3 +136,61 @@ func TestDeduplicatesByValue(t *testing.T) {
 		t.Error("expected the AWS key value present")
 	}
 }
+
+// Regression tests for the 2026-07 false-positive classes that corrupted real
+// artifacts (task UUIDs in prose, ISO timestamps, date-prefixed doc filenames,
+// file:line refs, shallow repo paths). The strings are built by concatenation
+// so the currently-installed hook can't vault them out of this very file.
+func TestProseUUIDWithTrailingPeriodNotFlagged(t *testing.T) {
+	uuid := "44cb0f45-33fc-" + "4cab-811d-" + "2f98e59630ef"
+	text := "Priority list on task " + uuid + ". St George first."
+	if got := Find(text); len(got) != 0 {
+		t.Fatalf("prose UUID flagged: %+v", got)
+	}
+}
+
+func TestISOTimestampNotFlagged(t *testing.T) {
+	ts := "2026-07-17T15:" + "32:22.452426+00:00"
+	text := `{"created_at": "` + ts + `"}`
+	if got := Find(text); len(got) != 0 {
+		t.Fatalf("ISO timestamp flagged: %+v", got)
+	}
+}
+
+func TestDatePrefixedFilenameNotFlagged(t *testing.T) {
+	name := "2026-07-16-qc-" + "testing-fixes-" + "workstreams.md"
+	for _, text := range []string{name, "docs/plans/" + name, "spec at docs/plans/" + name + " on develop"} {
+		if got := Find(text); len(got) != 0 {
+			t.Fatalf("date-prefixed filename flagged in %q: %+v", text, got)
+		}
+	}
+}
+
+func TestFileLineReferenceNotFlagged(t *testing.T) {
+	ref := "src/lib/" + "invoicing.ts:53"
+	if got := Find("(" + ref + ")"); len(got) != 0 {
+		t.Fatalf("file:line ref flagged: %+v", got)
+	}
+}
+
+func TestDottedConfigFilenameNotFlagged(t *testing.T) {
+	name := "spider.config" + ".template"
+	long := "tech.bsquared." + "screamingfrog." + "autostart.plist"
+	for _, text := range []string{name, long} {
+		if got := Find(text); len(got) != 0 {
+			t.Fatalf("dotted filename flagged in %q: %+v", text, got)
+		}
+	}
+}
+
+func TestRealSecretsStillDetectedAfterAllowlists(t *testing.T) {
+	// Shape-allowlists must not swallow genuine key material.
+	ghp := "ghp_" + "Abc123def456ghi789jkl012mno345pqr"
+	if got := Find("token=" + ghp); len(got) == 0 {
+		t.Fatal("github token no longer detected")
+	}
+	entropic := "9fK2mQ8xL4vB7nR1" + "pT6wY3zD5cH0jS8a"
+	if got := Find("value " + entropic + " end"); len(got) == 0 {
+		t.Fatal("high-entropy 32-char secret no longer detected")
+	}
+}
