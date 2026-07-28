@@ -183,6 +183,26 @@ func TestDottedConfigFilenameNotFlagged(t *testing.T) {
 	}
 }
 
+// Regression tests for the 2026-07-27 corruption class: PreToolUse scans the
+// raw JSON of tool_input, where newlines are the two-byte escape sequence
+// backslash-n. Tokens must split at backslashes and backticks or content that
+// merely straddles a line break (or sits in a markdown code span) gets vaulted
+// and a Write corrupts the file on disk.
+func TestJSONEscapedNewlineSplitsTokens(t *testing.T) {
+	// As seen inside a Write tool_input: **Date:** [vault:HIGH_ENTROPY_SECRET_3533] …
+	text := `**Date:** 2026-07-27` + `\` + `n**Status:** Approved approach`
+	if got := Find(text); len(got) != 0 {
+		t.Fatalf("JSON-escaped newline span flagged: %+v", got)
+	}
+}
+
+func TestBacktickedRepoPathNotFlagged(t *testing.T) {
+	path := "`/images/motorcycles/" + "2025-FE350.webp`"
+	if got := Find("(e.g. "+path+")"); len(got) != 0 {
+		t.Fatalf("backticked repo path flagged: %+v", got)
+	}
+}
+
 func TestRealSecretsStillDetectedAfterAllowlists(t *testing.T) {
 	// Shape-allowlists must not swallow genuine key material.
 	ghp := "ghp_" + "Abc123def456ghi789jkl012mno345pqr"

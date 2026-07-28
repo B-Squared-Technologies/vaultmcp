@@ -69,7 +69,14 @@ var allowlist = []*regexp.Regexp{
 
 // entropyTokens matches whitespace/punctuation-delimited candidate tokens. The
 // upper length bound is enforced in Find (RE2 caps bounded repeats at 1000).
-var entropyTokens = regexp.MustCompile(`[^\s,'";\[\]{}()\n]{20,}`)
+// Backslash and backtick are delimiters too: PreToolUse scans the raw JSON of
+// tool_input, where a newline is the literal two-byte sequence \n — without
+// the backslash split, a date followed by a bold heading on the next line
+// scans as one high-entropy token and a Write's file content gets corrupted
+// on disk. Markdown code spans similarly smuggle backticks into tokens and
+// defeat the path allowlist. Real key material virtually never contains
+// either character.
+var entropyTokens = regexp.MustCompile("[^\\s,'\";\\[\\]{}()\\n\\\\`]{20,}")
 
 func shannonEntropy(s string) float64 {
 	if s == "" {
@@ -125,7 +132,7 @@ var fileExt = regexp.MustCompile(`(?i)\.[a-z0-9]{1,6}$`)
 // looksLikePath rejects filesystem paths, the dominant entropy false
 // positive. Long or deeply-nested tokens are paths, and so is ANY
 // slash-separated token ending in a file extension — shallow repo-relative
-// paths ([vault:HIGH_ENTROPY_SECRET_1879]) burned us repeatedly. A real
+// paths (lib/data/reviews-2026.ts) burned us repeatedly. A real
 // secret is rarely slash-separated with a tidy extension.
 func looksLikePath(tok string) bool {
 	seps := strings.Count(tok, "/") + strings.Count(tok, `\`)
