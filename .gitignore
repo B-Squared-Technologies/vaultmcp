@@ -27,8 +27,8 @@ aws-credentials
 .aws/credentials
 .netrc
 
-# --- Claude local overrides (keep project settings, ignore machine-local) ---
-.claude/settings.local.json
+# --- Claude local config (machine-specific; vaultmcp install generates it) ---
+.claude/
 .remember/
 
 # --- Python ---
