@@ -13,7 +13,7 @@ vaultmcp install
 
 `vaultmcp install` registers the hooks in your Claude Code `settings.json` (idempotent). That's it — VaultMCP now intercepts credentials in every session.
 
-Prebuilt binaries will be attached to tagged releases. Until then, use `go install` above or build from source (bottom of this page).
+No Go toolchain? Grab a prebuilt binary for macOS, Linux, or Windows from the [releases page](https://github.com/B-Squared-Technologies/vaultmcp/releases), put it on your `PATH`, and run `vaultmcp install`.
 
 ## Wiring it into Claude Code
 
