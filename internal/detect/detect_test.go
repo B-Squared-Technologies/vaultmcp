@@ -244,6 +244,13 @@ func TestModulePseudoVersionNotFlagged(t *testing.T) {
 	}
 }
 
+func TestDateSuffixedFilenameNotFlagged(t *testing.T) {
+	name := "store.enc.bak" + "-20260728"
+	if got := Find("cp store.enc " + name); len(got) != 0 {
+		t.Fatalf("date-suffixed filename flagged: %+v", got)
+	}
+}
+
 func TestTwoSegmentSecretStillCaught(t *testing.T) {
 	// A dotted token whose segments are long and digit-bearing is key
 	// material, not a code identifier — the dotted-identifier allowlist

@@ -73,6 +73,7 @@ var allowlist = []*regexp.Regexp{
 	regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*\.[A-Za-z_]+$`), // dotted code identifier, e.g. pkg.SymbolName
 	regexp.MustCompile(`^[a-z0-9-]+(\.[a-z0-9-]+)+(/[A-Za-z0-9._~-]+)+$`),                 // host.tld/path — Go import path, URL path
 	regexp.MustCompile(`^v\d+\.\d+\.\d+(-\d{14}-[a-f0-9]{12})?$`),                         // semver / Go module pseudo-version
+	regexp.MustCompile(`^[a-z0-9]+([._-][a-z0-9]+)*[._-](19|20)\d{6}$`),                   // date-suffixed filename/slug, e.g. [vault:HIGH_ENTROPY_SECRET]
 }
 
 // entropyTokens matches whitespace/punctuation-delimited candidate tokens. The
