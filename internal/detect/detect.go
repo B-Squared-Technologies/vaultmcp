@@ -65,6 +65,14 @@ var allowlist = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)^\d{4}-\d{2}-\d{2}[-_][a-z0-9][a-z0-9._-]*$`), // date-prefixed slug/filename
 	regexp.MustCompile(`(?i)^[\w./-]+\.[a-z]{1,5}:\d+\)?$`),               // file.ext:line code reference
 	regexp.MustCompile(`(?i)^[a-z0-9]+([._-][a-z0-9]+)+\.[a-z]{1,5}$`),    // dotted/hyphenated filename, e.g. spider.config.template
+	// 2026-07-28: digit-bearing code identifiers, Go import paths, and module
+	// pseudo-versions — vaulted out of tool results (source reads, go build
+	// output) and would corrupt an Edit carrying them. Key material never ends
+	// in a pure-letter dotted segment, is never host.tld/path shaped, and is
+	// never a semver pseudo-version.
+	regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*\.[A-Za-z_]+$`), // dotted code identifier, e.g. pkg.SymbolName
+	regexp.MustCompile(`^[a-z0-9-]+(\.[a-z0-9-]+)+(/[A-Za-z0-9._~-]+)+$`),                 // host.tld/path — Go import path, URL path
+	regexp.MustCompile(`^v\d+\.\d+\.\d+(-\d{14}-[a-f0-9]{12})?$`),                         // semver / Go module pseudo-version
 }
 
 // entropyTokens matches whitespace/punctuation-delimited candidate tokens. The

@@ -214,3 +214,42 @@ func TestRealSecretsStillDetectedAfterAllowlists(t *testing.T) {
 		t.Fatal("high-entropy 32-char secret no longer detected")
 	}
 }
+
+// Regression tests for the 2026-07-28 false-positive classes: digit-bearing
+// code identifiers (dotted member access on names like chacha20-poly1305's Go
+// package), Go import paths, and module pseudo-versions were vaulted out of
+// tool results and would corrupt an Edit that carried them.
+func TestDottedCodeIdentifierNotFlagged(t *testing.T) {
+	for _, tok := range []string{
+		"chacha20poly" + "1305.NewX",
+		"chacha20poly" + "1305.NonceSizeX",
+	} {
+		if got := Find("aead, err := " + tok + "(key)"); len(got) != 0 {
+			t.Fatalf("code identifier %q flagged: %+v", tok, got)
+		}
+	}
+}
+
+func TestGoImportPathNotFlagged(t *testing.T) {
+	path := "golang.org/x/" + "crypto/chacha" + "20poly1305"
+	if got := Find(`import "` + path + `"`); len(got) != 0 {
+		t.Fatalf("import path flagged: %+v", got)
+	}
+}
+
+func TestModulePseudoVersionNotFlagged(t *testing.T) {
+	ver := "v0.0.0-2026" + "0728192015-" + "85242b5f6c72"
+	if got := Find("go: downloading example.com/mod " + ver); len(got) != 0 {
+		t.Fatalf("module pseudo-version flagged: %+v", got)
+	}
+}
+
+func TestTwoSegmentSecretStillCaught(t *testing.T) {
+	// A dotted token whose segments are long and digit-bearing is key
+	// material, not a code identifier — the dotted-identifier allowlist
+	// must not swallow it.
+	sec := "Xq9vR2mT7wL4pK8n" + "Z5jB.3cF6dG1hA0s" + "EbTqW9xYzK2mPd4r"
+	if got := Find("key " + sec + " end"); len(got) == 0 {
+		t.Fatal("two-segment entropic secret no longer detected")
+	}
+}
