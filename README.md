@@ -2,7 +2,7 @@
 
 Keep credentials out of Claude Code's transcript. VaultMCP is a single Go binary that runs as a Claude Code hook, detects secrets before they reach the conversation, and swaps them for aliases. Claude does its job; it just never sees the raw value.
 
-Works on **macOS, Linux, and Windows** — one static binary, no runtime to install.
+Works on **macOS, Linux, and Windows**. One static binary with no runtime dependencies; the Go toolchain is needed only to build it.
 
 ## Install
 
@@ -13,7 +13,34 @@ vaultmcp install
 
 `vaultmcp install` registers the hooks in your Claude Code `settings.json` (idempotent). That's it — VaultMCP now intercepts credentials in every session.
 
-No Go toolchain? Grab a prebuilt binary from the releases page, put it on your `PATH`, and run `vaultmcp install`.
+Prebuilt binaries will be attached to tagged releases. Until then, use `go install` above or build from source (bottom of this page).
+
+## Wiring it into Claude Code
+
+`vaultmcp install` writes both hooks into the project's `.claude/settings.json` (or `~/.claude/settings.json` with `--global`), using the absolute path to the binary. The result looks like this:
+
+```json
+{
+  "hooks": {
+    "PreToolUse":  [{ "matcher": ".*", "hooks": [{ "type": "command", "command": "/absolute/path/to/vaultmcp hook" }] }],
+    "PostToolUse": [{ "matcher": ".*", "hooks": [{ "type": "command", "command": "/absolute/path/to/vaultmcp hook" }] }]
+  }
+}
+```
+
+You can paste that manually instead; `vaultmcp hook` reads the hook event JSON on stdin and needs no arguments.
+
+## Other coding agents
+
+The full transparent flow (rewrite tool inputs, redact tool results) exists only for Claude Code today. Honest status elsewhere:
+
+| Tool | Status |
+|---|---|
+| **Cursor** (1.7+) | Closest fit. Cursor hooks (`.cursor/hooks.json`) receive JSON on stdin and can deny or redact on events like `beforeShellExecution` and `beforeReadFile`. Needs an adapter mapping those payloads to VaultMCP's engine. Not built yet; contributions welcome. |
+| **OpenAI Codex CLI** (0.114+) | Partial at best. Hooks are experimental (feature flag, not on Windows), fire only for shell commands, and can deny but not rewrite. The most VaultMCP could do is block a command carrying a raw secret and tell the agent to retry with `$(vaultmcp get ALIAS)`. |
+| **Grok Build** | Has a lifecycle hook system (JSON on stdin, policy enforcement). Whether a hook can rewrite tool input is undocumented. Untested. |
+
+The CLI itself is tool-agnostic: `vaultmcp set` / `get` and `$(vaultmcp get ALIAS)` substitution work in any agent that runs shell commands, today.
 
 ## How it works
 
@@ -100,3 +127,7 @@ go build -o vaultmcp .   # Go 1.26+ (pinned via .go-version)
 ## Philosophy
 
 Secrets should never appear in an AI's context window — not because the AI isn't trusted, but because the context window is a transcript, and transcripts get stored, logged, and leaked. VaultMCP makes the secure path the path of least resistance.
+
+## License
+
+MIT
