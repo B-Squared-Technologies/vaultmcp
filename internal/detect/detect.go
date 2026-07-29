@@ -83,9 +83,11 @@ var allowlist = []*regexp.Regexp{
 // the backslash split, a date followed by a bold heading on the next line
 // scans as one high-entropy token and a Write's file content gets corrupted
 // on disk. Markdown code spans similarly smuggle backticks into tokens and
-// defeat the path allowlist. Real key material virtually never contains
-// either character.
-var entropyTokens = regexp.MustCompile("[^\\s,'\";\\[\\]{}()\\n\\\\`]{20,}")
+// defeat the path allowlist. Angle brackets are HTML/XML tag structure — a
+// token that swallowed a tag's closing '>' once corrupted a written file
+// when the placeholder replaced part of the markup. Real key material
+// virtually never contains any of these characters.
+var entropyTokens = regexp.MustCompile("[^\\s,'\";\\[\\]{}()\\n\\\\`<>]{20,}")
 
 func shannonEntropy(s string) float64 {
 	if s == "" {

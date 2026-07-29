@@ -1,6 +1,9 @@
 package detect
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func hasType(ms []Match, kind string) bool {
 	for _, m := range ms {
@@ -241,6 +244,19 @@ func TestModulePseudoVersionNotFlagged(t *testing.T) {
 	ver := "v0.0.0-2026" + "0728192015-" + "85242b5f6c72"
 	if got := Find("go: downloading example.com/mod " + ver); len(got) != 0 {
 		t.Fatalf("module pseudo-version flagged: %+v", got)
+	}
+}
+
+// Regression test for the 2026-07-28 HTML corruption: the entropy tokenizer
+// swallowed a tag's closing '>' into a vaulted token, so the placeholder
+// replaced part of the markup and broke the written file. Angle brackets are
+// tag structure, never key material — they must delimit tokens.
+func TestHTMLTagBoundarySplitsTokens(t *testing.T) {
+	text := `<span class="bad">sk-ant-` + `a1b2c3d4&hel` + `lip;</span>`
+	for _, m := range Find(text) {
+		if strings.ContainsAny(m.Value, "<>") {
+			t.Fatalf("token crossed a tag boundary: %q", m.Value)
+		}
 	}
 }
 
