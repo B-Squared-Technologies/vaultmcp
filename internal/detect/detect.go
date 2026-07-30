@@ -128,6 +128,44 @@ func digitCount(s string) int {
 	return n
 }
 
+// alnumRun matches maximal alphanumeric runs inside a candidate token.
+var alnumRun = regexp.MustCompile(`[A-Za-z0-9]+`)
+
+// isWordChain reports whether tok is a separator-joined chain of word/number
+// segments rather than key material. 2026-07-30: Tailwind modifier classes
+// (hover + border + ink + 900/60 shapes), kebab-case product ids, URL query
+// fragments, and SVG path data all cleared the entropy bar and got vaulted
+// out of Write inputs, corrupting 13 spots across 10 freshly written files.
+// The structural tell: their alphanumeric runs are pure letters or pure
+// digits (or ≤3 chars), while random key material mixes letters and digits
+// inside long contiguous runs. Applied ONLY to the entropy scan — known
+// pattern hits (e.g. slack [vault:SLACK_BOT_TOKEN_3], which IS a word chain) must
+// stay unaffected.
+func isWordChain(tok string) bool {
+	runs := alnumRun.FindAllString(tok, -1)
+	if len(runs) < 2 {
+		return false
+	}
+	for _, run := range runs {
+		if len(run) <= 3 {
+			continue
+		}
+		hasDigit := false
+		hasAlpha := false
+		for _, c := range run {
+			if c >= '0' && c <= '9' {
+				hasDigit = true
+			} else {
+				hasAlpha = true
+			}
+		}
+		if hasDigit && hasAlpha {
+			return false
+		}
+	}
+	return true
+}
+
 func isAllowlisted(tok string) bool {
 	for _, re := range allowlist {
 		if re.MatchString(tok) {
@@ -176,7 +214,7 @@ func Find(text string) []Match {
 		// and defeats the anchored allowlist shapes — strip it before any
 		// check so a UUID followed by a period is still recognized as a UUID.
 		val = strings.TrimRight(val, ".,:;!?")
-		if seen[val] || isAllowlisted(val) || looksLikePath(val) {
+		if seen[val] || isAllowlisted(val) || looksLikePath(val) || isWordChain(val) {
 			continue
 		}
 		if len(val) < minTokenLen || len(val) > maxTokenLen {
