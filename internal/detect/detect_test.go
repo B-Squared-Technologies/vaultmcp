@@ -70,6 +70,46 @@ func TestAllowlistNotFlagged(t *testing.T) {
 	}
 }
 
+// TestWordChainNotFlagged covers the 2026-07-30 corruption incident: Tailwind
+// modifier classes, kebab product ids, URL query fragments, and SVG path data
+// were vaulted out of Write inputs. Literals are concatenation-split so this
+// test file itself can be written safely under the pre-fix binary.
+func TestWordChainNotFlagged(t *testing.T) {
+	clean := []string{
+		"hover:border-" + "ink-900/60",
+		"group-hover:" + "scale-105",
+		"decoration-" + "gold-500/70",
+		"placeholder:" + "text-ink-500/70",
+		"hover:-trans" + "late-y-0.5",
+		"gemini-2.5-" + "flash-image",
+		"+504+W+Buena" + "+Vista+Blvd",
+		"+UT+84780&" + "output=embed",
+		"M13.5 22v-8h2.7l" + ".4-3.2h-3.1V8.7c0-.9.3-1.6",
+		"projects/104205" + "09887846291132",
+	}
+	for _, c := range clean {
+		if got := Find(c); len(got) != 0 {
+			t.Errorf("word chain %q wrongly flagged: %+v", c, got)
+		}
+	}
+}
+
+// Word-chain shapes must NOT weaken real detections.
+func TestWordChainDoesNotSuppressRealSecrets(t *testing.T) {
+	// A slack token is itself a word chain; the known-pattern pass must
+	// still catch it.
+	slack := "xoxb-12345" + "67890-09876" + "54321-" + "abcdefghijklmnop"
+	if got := Find(slack); !hasType(got, "slack_bot_token") {
+		t.Errorf("slack token missed with word-chain rule active: %+v", got)
+	}
+	// Random key material mixes letters and digits inside long runs and must
+	// still trip the entropy scan even when dash-separated.
+	entropy := "Zk8qPw2v" + "Xr5tYb9n" + "-Lm4cVd7f" + "Hs6jQa3e"
+	if got := Find("export API_KEY=" + entropy); !hasType(got, "high_entropy_secret") {
+		t.Errorf("dashed random key missed: %+v", got)
+	}
+}
+
 func TestLongPathNotFlaggedAsSecret(t *testing.T) {
 	// The known entropy false-positive the architect asked us to suppress.
 	path := "/private/tmp/claude-501/some-very-long-nested/build/artifacts/output/final/result.tmp"
