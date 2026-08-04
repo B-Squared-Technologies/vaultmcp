@@ -86,6 +86,12 @@ func TestWordChainNotFlagged(t *testing.T) {
 		"+UT+84780&" + "output=embed",
 		"M13.5 22v-8h2.7l" + ".4-3.2h-3.1V8.7c0-.9.3-1.6",
 		"projects/104205" + "09887846291132",
+		// 2026-08-03 incident: camelCase identifiers with an embedded pure-
+		// digit run (Base64 and friends) were vaulted out of a freshly
+		// written script, corrupting it on disk.
+		"json.predictions?.[0]?.bytes" + "Base64Encoded",
+		"const b64 = json.predictions?.[0]?.bytes" + "Base64Encoded",
+		"bytesBase" + "64Encoded",
 	}
 	for _, c := range clean {
 		if got := Find(c); len(got) != 0 {
