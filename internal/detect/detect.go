@@ -143,27 +143,56 @@ var alnumRun = regexp.MustCompile(`[A-Za-z0-9]+`)
 // stay unaffected.
 func isWordChain(tok string) bool {
 	runs := alnumRun.FindAllString(tok, -1)
-	if len(runs) < 2 {
+	if len(runs) == 0 {
 		return false
 	}
 	for _, run := range runs {
 		if len(run) <= 3 {
 			continue
 		}
-		hasDigit := false
-		hasAlpha := false
-		for _, c := range run {
-			if c >= '0' && c <= '9' {
-				hasDigit = true
-			} else {
-				hasAlpha = true
-			}
-		}
-		if hasDigit && hasAlpha {
+		if !runIsWordLike(run) {
 			return false
 		}
 	}
 	return true
+}
+
+// runIsWordLike reports whether one maximal alphanumeric run reads as
+// identifier/word material rather than key material. Pure letters and pure
+// digits qualify (the separator-joined chains of the 2026-07-30 incident).
+// 2026-08-03 addition: camelCase identifiers with ONE short interior digit
+// cluster (bytes + Base64 + Encoded shapes, Sha256, Utf8) are a single
+// mixed run and were still being vaulted out of Write inputs. Random key
+// material scatters digits through the run (several clusters), so a lone
+// digit cluster of <=3 characters stays word-like while dashed random keys
+// keep tripping the scan.
+func runIsWordLike(run string) bool {
+	digitClusters := 0
+	clusterLen := 0
+	maxClusterLen := 0
+	inCluster := false
+	hasAlpha := false
+	for _, c := range run {
+		if c >= '0' && c <= '9' {
+			if !inCluster {
+				digitClusters++
+				clusterLen = 0
+				inCluster = true
+			}
+			clusterLen++
+			if clusterLen > maxClusterLen {
+				maxClusterLen = clusterLen
+			}
+		} else {
+			hasAlpha = true
+			inCluster = false
+		}
+	}
+	if digitClusters == 0 || !hasAlpha {
+		// Pure letters, or pure digits (project numbers, timestamps).
+		return true
+	}
+	return digitClusters == 1 && maxClusterLen <= 3
 }
 
 func isAllowlisted(tok string) bool {
