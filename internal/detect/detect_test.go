@@ -114,6 +114,12 @@ func TestWordChainDoesNotSuppressRealSecrets(t *testing.T) {
 	if got := Find("export API_KEY=" + entropy); !hasType(got, "high_entropy_secret") {
 		t.Errorf("dashed random key missed: %+v", got)
 	}
+	// License-key shape: ALL runs short and mixed. The <=3-run exemption must
+	// not blanket-skip these (Copilot finding on PR #7).
+	licenseKey := "Ab1-Cd2-" + "Ef3-Gh4-" + "Ij5-Kl6x"
+	if got := Find("export LICENSE=" + licenseKey); !hasType(got, "high_entropy_secret") {
+		t.Errorf("short-mixed-chunk key missed: %+v", got)
+	}
 }
 
 func TestLongPathNotFlaggedAsSecret(t *testing.T) {
