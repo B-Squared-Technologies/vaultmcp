@@ -146,15 +146,44 @@ func isWordChain(tok string) bool {
 	if len(runs) == 0 {
 		return false
 	}
+	shortMixed := 0
+	wordish := 0
 	for _, run := range runs {
 		if len(run) <= 3 {
+			if runMixesAlphaAndDigit(run) {
+				shortMixed++
+			} else {
+				wordish++
+			}
 			continue
 		}
 		if !runIsWordLike(run) {
 			return false
 		}
+		wordish++
+	}
+	// Short mixed chunks are benign inside real word chains (SVG path data is
+	// full of them, but pure runs dominate there). When they OUTNUMBER the
+	// word-like runs the token is license-key shaped (LICENSE=Ab1-Cd2-Ef3-Gh4:
+	// one word run, six mixed chunks) - let the entropy test judge it instead
+	// of exempting it.
+	if shortMixed >= 3 && shortMixed > wordish {
+		return false
 	}
 	return true
+}
+
+func runMixesAlphaAndDigit(run string) bool {
+	hasDigit := false
+	hasAlpha := false
+	for _, c := range run {
+		if c >= '0' && c <= '9' {
+			hasDigit = true
+		} else {
+			hasAlpha = true
+		}
+	}
+	return hasDigit && hasAlpha
 }
 
 // runIsWordLike reports whether one maximal alphanumeric run reads as
@@ -243,10 +272,13 @@ func Find(text string) []Match {
 		// and defeats the anchored allowlist shapes — strip it before any
 		// check so a UUID followed by a period is still recognized as a UUID.
 		val = strings.TrimRight(val, ".,:;!?")
-		if seen[val] || isAllowlisted(val) || looksLikePath(val) || isWordChain(val) {
+		// Length bounds FIRST: isWordChain allocates a slice of every
+		// alphanumeric run, so a huge unbroken token must be discarded before
+		// the parsers run, not after.
+		if len(val) < minTokenLen || len(val) > maxTokenLen {
 			continue
 		}
-		if len(val) < minTokenLen || len(val) > maxTokenLen {
+		if seen[val] || isAllowlisted(val) || looksLikePath(val) || isWordChain(val) {
 			continue
 		}
 		// Code identifiers (camelCase, PascalCase, dotted member access) routinely
