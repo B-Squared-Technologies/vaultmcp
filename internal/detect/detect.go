@@ -193,8 +193,11 @@ func runMixesAlphaAndDigit(run string) bool {
 // cluster (bytes + Base64 + Encoded shapes, Sha256, Utf8) are a single
 // mixed run and were still being vaulted out of Write inputs. Random key
 // material scatters digits through the run (several clusters), so a lone
-// digit cluster of <=3 characters stays word-like while dashed random keys
-// keep tripping the scan.
+// digit cluster stays word-like while dashed random keys keep tripping the
+// scan. 2026-08-14: cap raised 3 -> 5. Round numbers and years are common
+// lone clusters in identifiers (Under1000Lbs, Sha256 vs year2026, port8080)
+// and a single digit block flanked by letter runs carries almost no entropy;
+// the multi-cluster and short-mixed shapes remain the key-material tells.
 func runIsWordLike(run string) bool {
 	digitClusters := 0
 	clusterLen := 0
@@ -221,7 +224,7 @@ func runIsWordLike(run string) bool {
 		// Pure letters, or pure digits (project numbers, timestamps).
 		return true
 	}
-	return digitClusters == 1 && maxClusterLen <= 3
+	return digitClusters == 1 && maxClusterLen <= 5
 }
 
 func isAllowlisted(tok string) bool {
