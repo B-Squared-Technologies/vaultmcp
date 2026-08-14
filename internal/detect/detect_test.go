@@ -92,6 +92,10 @@ func TestWordChainNotFlagged(t *testing.T) {
 		"json.predictions?.[0]?.bytes" + "Base64Encoded",
 		"const b64 = json.predictions?.[0]?.bytes" + "Base64Encoded",
 		"bytesBase" + "64Encoded",
+		// 2026-08-14 incident: a camelCase identifier with a lone 4-digit
+		// round number was vaulted out of a freshly written TS file.
+		"export const bestOverlandTrailersUnder10" + "00Lbs: Guide = {",
+		"bestOverlandTrailersUnder10" + "00Lbs",
 	}
 	for _, c := range clean {
 		if got := Find(c); len(got) != 0 {
