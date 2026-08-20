@@ -17,8 +17,8 @@ vaultmcp install --global
 |---|---|---|
 | Claude Code | `~/.claude/settings.json` | nested `PreToolUse` / `PostToolUse` |
 | Grok | same Claude file (compat on by default) | camelCase stdin (`run_terminal_command`, `toolResult`) |
-| Codex | `~/.codex/hooks.json` | nested `PreToolUse` / `PostToolUse` (Claude-shaped) |
-| Cursor | `~/.cursor/hooks.json` | `{version: 1, preToolUse, beforeShellExecution, postToolUse, afterShellExecution}` with a flat `command` |
+| Codex | `~/.codex/hooks.json` | nested `PreToolUse` only (Claude-shaped) |
+| Cursor | `~/.cursor/hooks.json` | `{version: 1, hooks: {preToolUse, beforeShellExecution, postToolUse, afterShellExecution}}` with a flat `command` |
 
 `vaultmcp install` without `--global` still writes only the project's `.claude/settings.json`.
 
@@ -35,7 +35,8 @@ You can paste the JSON by hand instead of using `install`. The hook needs no arg
 ## Limits
 
 - Cursor `afterShellExecution` has no documented way to rewrite what the model sees. Pre-rewrite still works. Post-redact of `cat .env` may not stick in Cursor.
-- Codex hooks can be off (`[features] hooks = false`) or waiting on `/hooks` trust.
+- Grok treats `PostToolUse` as passive: hook stdout is recorded but does not replace the result shown to the model. `cat .env` still reaches Grok; rely on Pre rewrite.
+- Codex PostToolUse cannot rewrite tool results (`updatedToolOutput` is not in the schema). Only PreToolUse is registered. Codex hooks can also be off (`[features] hooks = false`) or waiting on `/hooks` trust.
 - Fail-open: if VaultMCP errors, the tool call proceeds untouched.
 
 ## How it works

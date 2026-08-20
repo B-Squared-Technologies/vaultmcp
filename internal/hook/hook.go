@@ -53,18 +53,23 @@ type envelope struct {
 	ToolName  string
 	ToolInput json.RawMessage
 	ToolResp  json.RawMessage
+	Cursor    bool
 }
 
-type preOutput struct {
-	// Cursor native (preToolUse).
-	Permission   string          `json:"permission,omitempty"`
-	UpdatedInput json.RawMessage `json:"updated_input,omitempty"`
-	// Claude / Grok / Codex.
+// claudePreOutput is the PreToolUse response Claude, Grok, and Codex accept.
+// Extra root fields (Cursor's permission / updated_input) are omitted so a
+// strict decoder cannot reject the whole rewrite.
+type claudePreOutput struct {
 	HookSpecificOutput struct {
 		HookEventName      string          `json:"hookEventName"`
 		PermissionDecision string          `json:"permissionDecision"`
 		UpdatedInput       json.RawMessage `json:"updatedInput"`
 	} `json:"hookSpecificOutput"`
+}
+
+type cursorPreOutput struct {
+	Permission   string          `json:"permission,omitempty"`
+	UpdatedInput json.RawMessage `json:"updated_input,omitempty"`
 }
 
 type postOutput struct {
@@ -116,11 +121,13 @@ func parseEnvelope(stdin []byte) (envelope, bool) {
 		return s
 	}
 
+	rawEvent := str("hook_event_name", "hookEventName", "event")
 	env := envelope{
-		Event:     normalizeEvent(str("hook_event_name", "hookEventName", "event")),
+		Event:     normalizeEvent(rawEvent),
 		ToolName:  str("tool_name", "toolName"),
 		ToolInput: firstRaw(get("tool_input", "toolInput")),
 		ToolResp:  firstRaw(get("tool_response", "toolResponse", "tool_result", "toolResult", "tool_output", "output")),
+		Cursor:    isCursorEvent(rawEvent),
 	}
 
 	// Cursor beforeShellExecution often puts the command at the top level.
@@ -156,6 +163,15 @@ func normalizeEvent(s string) string {
 		return "PostToolUse"
 	default:
 		return ""
+	}
+}
+
+func isCursorEvent(s string) bool {
+	switch s {
+	case "preToolUse", "postToolUse", "beforeShellExecution", "afterShellExecution", "beforeMCPExecution", "afterMCPExecution", "afterFileEdit":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -232,10 +248,21 @@ func (d Deps) preToolUse(env envelope) []byte {
 		return nil
 	}
 
-	rewritten := json.RawMessage(text)
-	var out preOutput
-	out.Permission = "allow"
-	out.UpdatedInput = rewritten
+	return marshalPre(env, json.RawMessage(text))
+}
+
+func marshalPre(env envelope, rewritten json.RawMessage) []byte {
+	if env.Cursor {
+		b, err := json.Marshal(cursorPreOutput{
+			Permission:   "allow",
+			UpdatedInput: rewritten,
+		})
+		if err != nil {
+			return nil
+		}
+		return b
+	}
+	var out claudePreOutput
 	out.HookSpecificOutput.HookEventName = "PreToolUse"
 	out.HookSpecificOutput.PermissionDecision = "allow"
 	out.HookSpecificOutput.UpdatedInput = rewritten

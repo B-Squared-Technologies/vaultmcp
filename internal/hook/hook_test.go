@@ -45,7 +45,7 @@ func TestPreBashIngressVaultsAndSubstitutes(t *testing.T) {
 		t.Fatalf("expected command substitution, got: %s", out)
 	}
 	// Output must be valid hook JSON with updatedInput.
-	var parsed preOutput
+	var parsed claudePreOutput
 	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
 		t.Fatalf("output not valid hook JSON: %v", err)
 	}
@@ -55,6 +55,7 @@ func TestPreBashIngressVaultsAndSubstitutes(t *testing.T) {
 	if parsed.HookSpecificOutput.PermissionDecision != "allow" {
 		t.Fatalf("expected allow, got %q", parsed.HookSpecificOutput.PermissionDecision)
 	}
+	assertNoCursorRootFields(t, out)
 	// The secret is now retrievable from the store.
 	store, err := vault.Load(d.Paths.Store, d.MasterKey)
 	if err != nil {
@@ -207,6 +208,7 @@ func TestGrokPreToolUseCamelCaseAndShellName(t *testing.T) {
 	if !strings.Contains(out, fakeExe+" get AWS_ACCESS_KEY") {
 		t.Fatalf("expected shell substitution for run_terminal_command, got: %s", out)
 	}
+	assertNoCursorRootFields(t, out)
 }
 
 func TestGrokPostToolUseToolResult(t *testing.T) {
@@ -230,6 +232,10 @@ func TestCodexPreToolUseMatchesClaude(t *testing.T) {
 	if !strings.Contains(out, fakeExe+" get AWS_ACCESS_KEY") {
 		t.Fatalf("Codex/Claude Bash payload should substitute: %s", out)
 	}
+	assertNoCursorRootFields(t, out)
+	if !strings.Contains(out, `"hookSpecificOutput"`) {
+		t.Fatalf("Codex/Claude rewrite must use hookSpecificOutput: %s", out)
+	}
 }
 
 func TestCursorBeforeShellExecution(t *testing.T) {
@@ -245,7 +251,7 @@ func TestCursorBeforeShellExecution(t *testing.T) {
 	if !strings.Contains(out, fakeExe+" get AWS_ACCESS_KEY") {
 		t.Fatalf("expected shell substitution, got: %s", out)
 	}
-	var parsed preOutput
+	var parsed cursorPreOutput
 	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
 		t.Fatalf("output not valid JSON: %v", err)
 	}
@@ -255,6 +261,9 @@ func TestCursorBeforeShellExecution(t *testing.T) {
 	if !strings.Contains(string(parsed.UpdatedInput), fakeExe+" get AWS_ACCESS_KEY") {
 		t.Fatalf("Cursor updated_input missing substitution: %s", parsed.UpdatedInput)
 	}
+	if strings.Contains(out, "hookSpecificOutput") {
+		t.Fatalf("Cursor output must not include Claude hookSpecificOutput: %s", out)
+	}
 }
 
 func TestCursorPreToolUseShell(t *testing.T) {
@@ -263,5 +272,21 @@ func TestCursorPreToolUseShell(t *testing.T) {
 	out := string(Process([]byte(in), d))
 	if !strings.Contains(out, fakeExe+" get AWS_ACCESS_KEY") {
 		t.Fatalf("expected Shell substitution, got: %s", out)
+	}
+	if strings.Contains(out, "hookSpecificOutput") {
+		t.Fatalf("Cursor output must not include Claude hookSpecificOutput: %s", out)
+	}
+	if !strings.Contains(out, `"updated_input"`) {
+		t.Fatalf("Cursor rewrite must use updated_input: %s", out)
+	}
+}
+
+func assertNoCursorRootFields(t *testing.T, out string) {
+	t.Helper()
+	if strings.Contains(out, `"permission":`) {
+		t.Fatalf("Claude/Codex/Grok output must not include Cursor permission: %s", out)
+	}
+	if strings.Contains(out, `"updated_input"`) {
+		t.Fatalf("Claude/Codex/Grok output must not include Cursor updated_input: %s", out)
 	}
 }
