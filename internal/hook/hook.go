@@ -36,7 +36,7 @@ var aliasRe = regexp.MustCompile(`\[vault:([A-Za-z0-9_]+)\]`)
 var shellTools = map[string]bool{
 	"Bash":                 true, // Claude, Codex
 	"run_terminal_command": true, // Grok
-	"Shell":                true,
+	"Shell":                true, // Cursor
 	"shell":                true,
 }
 
@@ -56,6 +56,10 @@ type envelope struct {
 }
 
 type preOutput struct {
+	// Cursor native (preToolUse).
+	Permission   string          `json:"permission,omitempty"`
+	UpdatedInput json.RawMessage `json:"updated_input,omitempty"`
+	// Claude / Grok / Codex.
 	HookSpecificOutput struct {
 		HookEventName      string          `json:"hookEventName"`
 		PermissionDecision string          `json:"permissionDecision"`
@@ -116,7 +120,7 @@ func parseEnvelope(stdin []byte) (envelope, bool) {
 		Event:     normalizeEvent(str("hook_event_name", "hookEventName", "event")),
 		ToolName:  str("tool_name", "toolName"),
 		ToolInput: firstRaw(get("tool_input", "toolInput")),
-		ToolResp:  firstRaw(get("tool_response", "toolResponse", "tool_result", "toolResult")),
+		ToolResp:  firstRaw(get("tool_response", "toolResponse", "tool_result", "toolResult", "tool_output", "output")),
 	}
 
 	// Cursor beforeShellExecution often puts the command at the top level.
@@ -228,10 +232,13 @@ func (d Deps) preToolUse(env envelope) []byte {
 		return nil
 	}
 
+	rewritten := json.RawMessage(text)
 	var out preOutput
+	out.Permission = "allow"
+	out.UpdatedInput = rewritten
 	out.HookSpecificOutput.HookEventName = "PreToolUse"
 	out.HookSpecificOutput.PermissionDecision = "allow"
-	out.HookSpecificOutput.UpdatedInput = json.RawMessage(text)
+	out.HookSpecificOutput.UpdatedInput = rewritten
 	b, err := json.Marshal(out)
 	if err != nil {
 		return nil

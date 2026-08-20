@@ -234,7 +234,7 @@ func TestCodexPreToolUseMatchesClaude(t *testing.T) {
 
 func TestCursorBeforeShellExecution(t *testing.T) {
 	d := testDeps(t)
-	in := `{"hookEventName":"beforeShellExecution","command":"aws configure set key ` + awsKey + `"}`
+	in := `{"hook_event_name":"beforeShellExecution","command":"aws configure set key ` + awsKey + `"}`
 	out := string(Process([]byte(in), d))
 	if out == "" {
 		t.Fatal("expected Cursor beforeShellExecution to rewrite")
@@ -244,5 +244,24 @@ func TestCursorBeforeShellExecution(t *testing.T) {
 	}
 	if !strings.Contains(out, fakeExe+" get AWS_ACCESS_KEY") {
 		t.Fatalf("expected shell substitution, got: %s", out)
+	}
+	var parsed preOutput
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("output not valid JSON: %v", err)
+	}
+	if parsed.Permission != "allow" {
+		t.Fatalf("Cursor permission: %q", parsed.Permission)
+	}
+	if !strings.Contains(string(parsed.UpdatedInput), fakeExe+" get AWS_ACCESS_KEY") {
+		t.Fatalf("Cursor updated_input missing substitution: %s", parsed.UpdatedInput)
+	}
+}
+
+func TestCursorPreToolUseShell(t *testing.T) {
+	d := testDeps(t)
+	in := `{"hook_event_name":"preToolUse","tool_name":"Shell","tool_input":{"command":"aws configure set key ` + awsKey + `"}}`
+	out := string(Process([]byte(in), d))
+	if !strings.Contains(out, fakeExe+" get AWS_ACCESS_KEY") {
+		t.Fatalf("expected Shell substitution, got: %s", out)
 	}
 }

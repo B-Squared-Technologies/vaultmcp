@@ -104,19 +104,15 @@ func installSiblingHooks(command string) error {
 	if err != nil {
 		return err
 	}
-	targets := []string{
-		filepath.Join(home, ".codex", "hooks.json"),
-		filepath.Join(home, ".cursor", "hooks.json"),
+	codex := filepath.Join(home, ".codex", "hooks.json")
+	cursor := filepath.Join(home, ".cursor", "hooks.json")
+	if err := writeClaudeStyleHooks(codex, command); err != nil {
+		return err
 	}
-	for _, path := range targets {
-		if err := writeHarnessHooks(path, command); err != nil {
-			return err
-		}
-	}
-	return nil
+	return writeCursorHooks(cursor, command)
 }
 
-func writeHarnessHooks(path, command string) error {
+func writeClaudeStyleHooks(path, command string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
@@ -135,6 +131,37 @@ func writeHarnessHooks(path, command string) error {
 		}
 	}
 	settings["hooks"] = hooks
+	return writeJSON(path, settings, added)
+}
+
+// Cursor's hooks.json is {version, hooks: {preToolUse: [{command}]}} — not
+// Claude's nested matcher/hooks/type shape. See cursor.com/docs/agent/hooks.
+func writeCursorHooks(path, command string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return err
+	}
+	settings := map[string]any{"version": 1}
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &settings)
+	}
+	hooks, _ := settings["hooks"].(map[string]any)
+	if hooks == nil {
+		hooks = map[string]any{}
+	}
+	delete(hooks, "PreToolUse")
+	delete(hooks, "PostToolUse")
+	added := 0
+	for _, event := range []string{"preToolUse", "postToolUse", "beforeShellExecution", "afterShellExecution"} {
+		if ensureCursorHook(hooks, event, command) {
+			added++
+		}
+	}
+	settings["hooks"] = hooks
+	settings["version"] = 1
+	return writeJSON(path, settings, added)
+}
+
+func writeJSON(path string, settings map[string]any, added int) error {
 	out, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
 		return err
@@ -148,6 +175,18 @@ func writeHarnessHooks(path, command string) error {
 		fmt.Printf("  registered %d hook(s) in %s\n", added, path)
 	}
 	return nil
+}
+
+func ensureCursorHook(hooks map[string]any, event, command string) bool {
+	list, _ := hooks[event].([]any)
+	for _, entry := range list {
+		m, _ := entry.(map[string]any)
+		if cmd, _ := m["command"].(string); strings.Contains(cmd, "vaultmcp") {
+			return false
+		}
+	}
+	hooks[event] = append(list, map[string]any{"command": command})
+	return true
 }
 
 // ensureHook adds a {matcher:".*", hooks:[{type:command, command}]} entry for
