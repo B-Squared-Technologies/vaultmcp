@@ -1,59 +1,54 @@
 # VaultMCP
 
-Keep credentials out of Claude Code's transcript. VaultMCP is a single Go binary that runs as a Claude Code hook, detects secrets before they reach the conversation, and swaps them for aliases. Claude does its job; it just never sees the raw value.
+Keep credentials out of coding-agent transcripts. VaultMCP is a single Go binary that runs as a PreToolUse / PostToolUse hook, detects secrets before they reach the conversation, and swaps them for aliases. The agent does its job; it just never sees the raw value.
 
-Works on **macOS, Linux, and Windows**. One static binary with no runtime dependencies; the Go toolchain is needed only to build it.
+Works with **Claude Code, Grok, Codex, and Cursor**. One static binary, no runtime dependencies. macOS, Linux, and Windows. The Go toolchain is needed only to build it.
 
 ## Install
 
 ```bash
 go install github.com/B-Squared-Technologies/vaultmcp@latest
-vaultmcp install
+vaultmcp install --global
 ```
 
-`vaultmcp install` registers the hooks in your Claude Code `settings.json` (idempotent). That's it — VaultMCP now intercepts credentials in every session.
+`--global` registers hooks in:
 
-No Go toolchain? Grab a prebuilt binary for macOS, Linux, or Windows from the [releases page](https://github.com/B-Squared-Technologies/vaultmcp/releases), put it on your `PATH`, and run `vaultmcp install`.
+| Harness | File | Shape |
+|---|---|---|
+| Claude Code | `~/.claude/settings.json` | nested `PreToolUse` / `PostToolUse` |
+| Grok | same Claude file (compat on by default) | camelCase stdin (`run_terminal_command`, `toolResult`) |
+| Codex | `~/.codex/hooks.json` | nested `PreToolUse` only (Claude-shaped) |
+| Cursor | `~/.cursor/hooks.json` | `{version: 1, hooks: {preToolUse, beforeShellExecution, postToolUse, afterShellExecution}}` with a flat `command` |
 
-## Wiring it into Claude Code
+`vaultmcp install` without `--global` still writes only the project's `.claude/settings.json`.
 
-`vaultmcp install` writes both hooks into the project's `.claude/settings.json` (or `~/.claude/settings.json` with `--global`), using the absolute path to the binary. The result looks like this:
+No Go toolchain? Grab a prebuilt binary from the [releases page](https://github.com/B-Squared-Technologies/vaultmcp/releases), put it on your `PATH`, and run `vaultmcp install --global`.
 
-```json
-{
-  "hooks": {
-    "PreToolUse":  [{ "matcher": ".*", "hooks": [{ "type": "command", "command": "/absolute/path/to/vaultmcp hook" }] }],
-    "PostToolUse": [{ "matcher": ".*", "hooks": [{ "type": "command", "command": "/absolute/path/to/vaultmcp hook" }] }]
-  }
-}
-```
+Restart each agent after install. Codex `/hooks` may ask you to trust the new file.
 
-You can paste that manually instead; `vaultmcp hook` reads the hook event JSON on stdin and needs no arguments.
+## How the hook is wired
 
-## Other coding agents
+`vaultmcp hook` reads one JSON event on stdin. It accepts Claude snake_case, Grok camelCase, Codex `Bash`, and Cursor `preToolUse` / `beforeShellExecution` (top-level `command` or `tool_input`). Shell tools (`Bash`, `run_terminal_command`, `Shell`) expand `[vault:ALIAS]` to `$(vaultmcp get ALIAS)`. Other tools get a `[vault:ALIAS]` placeholder.
 
-The full transparent flow (rewrite tool inputs, redact tool results) exists only for Claude Code today. Honest status elsewhere:
+You can paste the JSON by hand instead of using `install`. The hook needs no arguments.
 
-| Tool | Status |
-|---|---|
-| **Cursor** (1.7+) | Closest fit. Cursor hooks (`.cursor/hooks.json`) receive JSON on stdin and can deny or redact on events like `beforeShellExecution` and `beforeReadFile`. Needs an adapter mapping those payloads to VaultMCP's engine. Not built yet; contributions welcome. |
-| **OpenAI Codex CLI** (0.114+) | Partial at best. Hooks are experimental (feature flag, not on Windows), fire only for shell commands, and can deny but not rewrite. The most VaultMCP could do is block a command carrying a raw secret and tell the agent to retry with `$(vaultmcp get ALIAS)`. |
-| **Grok Build** | Has a lifecycle hook system (JSON on stdin, policy enforcement). Whether a hook can rewrite tool input is undocumented. Untested. |
+## Limits
 
-The CLI itself is tool-agnostic: `vaultmcp set` / `get` and `$(vaultmcp get ALIAS)` substitution work in any agent that runs shell commands, today.
+- Cursor `afterShellExecution` has no documented way to rewrite what the model sees. Pre-rewrite still works. Post-redact of `cat .env` may not stick in Cursor.
+- Grok treats `PostToolUse` as passive: hook stdout is recorded but does not replace the result shown to the model. `cat .env` still reaches Grok; rely on Pre rewrite.
+- Codex PostToolUse cannot rewrite tool results (`updatedToolOutput` is not in the schema). Only PreToolUse is registered. Codex hooks can also be off (`[features] hooks = false`) or waiting on `/hooks` trust.
+- Fail-open: if VaultMCP errors, the tool call proceeds untouched.
 
 ## How it works
 
-VaultMCP registers two Claude Code hooks:
-
-- **PreToolUse** — scans tool inputs before they run. A detected secret is vaulted and replaced:
-  - In **Bash** commands → `$(vaultmcp get ALIAS)`, a command substitution. The transcript shows the harmless `$(...)`; your shell resolves the real value only at execution time (like `op run` / `doppler run`).
+- **PreToolUse** (and Cursor `beforeShellExecution` / `preToolUse`) — scans tool inputs before they run. A detected secret is vaulted and replaced:
+  - In **shell** commands → `$(vaultmcp get ALIAS)`, a command substitution. The transcript shows the harmless `$(...)`; the shell resolves the real value only at execution time (like `op run` / `doppler run`).
   - In other tools → a `[vault:ALIAS]` placeholder.
-- **PostToolUse** — scans tool *results* (e.g. when Claude runs `cat .env`) and redacts secrets to `[vault:ALIAS]` before Claude ever sees them.
+- **PostToolUse** (and Cursor `afterShellExecution` / `postToolUse`) — scans tool *results* (e.g. `cat .env`) and redacts secrets to `[vault:ALIAS]` before the model sees them, when the harness honors a rewritten result.
 
 Detection is two-layered: **known-pattern regexes** (AWS, GitHub, OpenAI, Anthropic, Slack, Stripe, JWTs, DB URLs, private keys) **plus a Shannon-entropy scan** that catches custom, high-randomness secrets no regex would know.
 
-If VaultMCP ever errors, it **fails open** — the tool call proceeds untouched. A bug here can never break Claude Code.
+If VaultMCP ever errors, it **fails open** — the tool call proceeds untouched. A bug here can never break the agent.
 
 ## Usage
 
@@ -66,7 +61,7 @@ vaultmcp status                  # vault + hook health
 vaultmcp audit --last 50         # view the hash-chained audit log
 vaultmcp unlock                  # cache the key for this machine
 vaultmcp lock                    # clear the cached key
-vaultmcp export-aliases          # print alias list for CLAUDE.md
+vaultmcp export-aliases          # print alias list for AGENTS.md / CLAUDE.md
 ```
 
 Reference an alias directly in a prompt:
@@ -75,7 +70,7 @@ Reference an alias directly in a prompt:
 Deploy the Lambda using [vault:AWS_ACCESS_KEY] and [vault:AWS_SECRET]
 ```
 
-In a Bash tool call, the alias resolves to the real value at execution; the value never appears in the conversation.
+In a shell tool call, the alias resolves to the real value at execution; the value never appears in the conversation. The CLI (`set` / `get` / `$(vaultmcp get ALIAS)`) works in any agent that can run a shell command, even if hooks are off.
 
 ## Unlocking the vault
 

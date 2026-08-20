@@ -45,7 +45,7 @@ func TestPreBashIngressVaultsAndSubstitutes(t *testing.T) {
 		t.Fatalf("expected command substitution, got: %s", out)
 	}
 	// Output must be valid hook JSON with updatedInput.
-	var parsed preOutput
+	var parsed claudePreOutput
 	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
 		t.Fatalf("output not valid hook JSON: %v", err)
 	}
@@ -55,6 +55,7 @@ func TestPreBashIngressVaultsAndSubstitutes(t *testing.T) {
 	if parsed.HookSpecificOutput.PermissionDecision != "allow" {
 		t.Fatalf("expected allow, got %q", parsed.HookSpecificOutput.PermissionDecision)
 	}
+	assertNoCursorRootFields(t, out)
 	// The secret is now retrievable from the store.
 	store, err := vault.Load(d.Paths.Store, d.MasterKey)
 	if err != nil {
@@ -191,5 +192,101 @@ func TestUnknownAliasNotExpanded(t *testing.T) {
 	out := runPre(t, d, "Bash", `{"command":"echo [vault:NOPE]"}`)
 	if strings.Contains(out, "get NOPE") {
 		t.Fatalf("unknown alias should not be expanded: %s", out)
+	}
+}
+
+func TestGrokPreToolUseCamelCaseAndShellName(t *testing.T) {
+	d := testDeps(t)
+	in := `{"hookEventName":"pre_tool_use","toolName":"run_terminal_command","toolInput":{"command":"aws configure set key ` + awsKey + `"}}`
+	out := string(Process([]byte(in), d))
+	if out == "" {
+		t.Fatal("expected Grok PreToolUse to rewrite")
+	}
+	if strings.Contains(out, awsKey) {
+		t.Fatalf("raw secret leaked: %s", out)
+	}
+	if !strings.Contains(out, fakeExe+" get AWS_ACCESS_KEY") {
+		t.Fatalf("expected shell substitution for run_terminal_command, got: %s", out)
+	}
+	assertNoCursorRootFields(t, out)
+}
+
+func TestGrokPostToolUseToolResult(t *testing.T) {
+	d := testDeps(t)
+	in := `{"hookEventName":"post_tool_use","toolName":"run_terminal_command","toolResult":{"stdout":"AWS_KEY=` + awsKey + `\n"}}`
+	out := string(Process([]byte(in), d))
+	if out == "" {
+		t.Fatal("expected Grok PostToolUse to redact")
+	}
+	if strings.Contains(out, awsKey) {
+		t.Fatalf("secret leaked: %s", out)
+	}
+	if !strings.Contains(out, "[vault:AWS_ACCESS_KEY]") {
+		t.Fatalf("expected placeholder, got: %s", out)
+	}
+}
+
+func TestCodexPreToolUseMatchesClaude(t *testing.T) {
+	d := testDeps(t)
+	out := runPre(t, d, "Bash", `{"command":"aws configure set key `+awsKey+`"}`)
+	if !strings.Contains(out, fakeExe+" get AWS_ACCESS_KEY") {
+		t.Fatalf("Codex/Claude Bash payload should substitute: %s", out)
+	}
+	assertNoCursorRootFields(t, out)
+	if !strings.Contains(out, `"hookSpecificOutput"`) {
+		t.Fatalf("Codex/Claude rewrite must use hookSpecificOutput: %s", out)
+	}
+}
+
+func TestCursorBeforeShellExecution(t *testing.T) {
+	d := testDeps(t)
+	in := `{"hook_event_name":"beforeShellExecution","command":"aws configure set key ` + awsKey + `"}`
+	out := string(Process([]byte(in), d))
+	if out == "" {
+		t.Fatal("expected Cursor beforeShellExecution to rewrite")
+	}
+	if strings.Contains(out, awsKey) {
+		t.Fatalf("raw secret leaked: %s", out)
+	}
+	if !strings.Contains(out, fakeExe+" get AWS_ACCESS_KEY") {
+		t.Fatalf("expected shell substitution, got: %s", out)
+	}
+	var parsed cursorPreOutput
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("output not valid JSON: %v", err)
+	}
+	if parsed.Permission != "allow" {
+		t.Fatalf("Cursor permission: %q", parsed.Permission)
+	}
+	if !strings.Contains(string(parsed.UpdatedInput), fakeExe+" get AWS_ACCESS_KEY") {
+		t.Fatalf("Cursor updated_input missing substitution: %s", parsed.UpdatedInput)
+	}
+	if strings.Contains(out, "hookSpecificOutput") {
+		t.Fatalf("Cursor output must not include Claude hookSpecificOutput: %s", out)
+	}
+}
+
+func TestCursorPreToolUseShell(t *testing.T) {
+	d := testDeps(t)
+	in := `{"hook_event_name":"preToolUse","tool_name":"Shell","tool_input":{"command":"aws configure set key ` + awsKey + `"}}`
+	out := string(Process([]byte(in), d))
+	if !strings.Contains(out, fakeExe+" get AWS_ACCESS_KEY") {
+		t.Fatalf("expected Shell substitution, got: %s", out)
+	}
+	if strings.Contains(out, "hookSpecificOutput") {
+		t.Fatalf("Cursor output must not include Claude hookSpecificOutput: %s", out)
+	}
+	if !strings.Contains(out, `"updated_input"`) {
+		t.Fatalf("Cursor rewrite must use updated_input: %s", out)
+	}
+}
+
+func assertNoCursorRootFields(t *testing.T, out string) {
+	t.Helper()
+	if strings.Contains(out, `"permission":`) {
+		t.Fatalf("Claude/Codex/Grok output must not include Cursor permission: %s", out)
+	}
+	if strings.Contains(out, `"updated_input"`) {
+		t.Fatalf("Claude/Codex/Grok output must not include Cursor updated_input: %s", out)
 	}
 }

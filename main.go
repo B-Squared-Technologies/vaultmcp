@@ -30,7 +30,7 @@ Usage:
   vaultmcp audit [--last N]      Show the audit log
   vaultmcp unlock                Cache the key for this machine/session
   vaultmcp lock                  Clear the cached key
-  vaultmcp install [--global]    Register hooks in this project (or ~/.claude with --global)
+  vaultmcp install [--global]    Register hooks (project .claude, or ~/.claude + Codex/Cursor with --global)
   vaultmcp export-aliases        Print alias list for CLAUDE.md
   vaultmcp hook                  (internal) run as a Claude Code hook`
 
