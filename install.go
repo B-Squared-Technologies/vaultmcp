@@ -117,6 +117,7 @@ func writeClaudeStyleHooks(path, command string) error {
 		return err
 	}
 	settings := map[string]any{}
+	// #nosec G304 -- path is a resolved ~/.codex/hooks.json, not user input.
 	if data, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(data, &settings)
 	}
@@ -141,6 +142,7 @@ func writeCursorHooks(path, command string) error {
 		return err
 	}
 	settings := map[string]any{"version": 1}
+	// #nosec G304 -- path is a resolved ~/.cursor/hooks.json, not user input.
 	if data, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(data, &settings)
 	}
