@@ -31,6 +31,15 @@ const bashTool = "Bash"
 
 var aliasRe = regexp.MustCompile(`\[vault:([A-Za-z0-9_]+)\]`)
 
+// Shell-equivalent tool names across harnesses. Alias expansion to
+// $(vaultmcp get ALIAS) is only safe in a real shell command.
+var shellTools = map[string]bool{
+	"Bash":                 true, // Claude, Codex
+	"run_terminal_command": true, // Grok
+	"Shell":                true,
+	"shell":                true,
+}
+
 // Deps are the runtime dependencies for processing a hook event.
 type Deps struct {
 	Paths     vault.Paths
@@ -40,10 +49,10 @@ type Deps struct {
 }
 
 type envelope struct {
-	Event     string          `json:"hook_event_name"`
-	ToolName  string          `json:"tool_name"`
-	ToolInput json.RawMessage `json:"tool_input"`
-	ToolResp  json.RawMessage `json:"tool_response"`
+	Event     string
+	ToolName  string
+	ToolInput json.RawMessage
+	ToolResp  json.RawMessage
 }
 
 type preOutput struct {
@@ -64,8 +73,8 @@ type postOutput struct {
 // Process handles one hook invocation. It returns the JSON bytes to write to
 // stdout, or nil to emit nothing (no change / fail open).
 func Process(stdin []byte, d Deps) []byte {
-	var env envelope
-	if err := json.Unmarshal(stdin, &env); err != nil {
+	env, ok := parseEnvelope(stdin)
+	if !ok {
 		return nil
 	}
 	switch env.Event {
@@ -76,6 +85,78 @@ func Process(stdin []byte, d Deps) []byte {
 	default:
 		return nil
 	}
+}
+
+func parseEnvelope(stdin []byte) (envelope, bool) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(stdin, &raw); err != nil {
+		return envelope{}, false
+	}
+	get := func(keys ...string) json.RawMessage {
+		for _, k := range keys {
+			if v, ok := raw[k]; ok {
+				return v
+			}
+		}
+		return nil
+	}
+	str := func(keys ...string) string {
+		v := get(keys...)
+		if len(v) == 0 {
+			return ""
+		}
+		var s string
+		if err := json.Unmarshal(v, &s); err != nil {
+			return ""
+		}
+		return s
+	}
+
+	env := envelope{
+		Event:     normalizeEvent(str("hook_event_name", "hookEventName", "event")),
+		ToolName:  str("tool_name", "toolName"),
+		ToolInput: firstRaw(get("tool_input", "toolInput")),
+		ToolResp:  firstRaw(get("tool_response", "toolResponse", "tool_result", "toolResult")),
+	}
+
+	// Cursor beforeShellExecution often puts the command at the top level.
+	if len(env.ToolInput) == 0 {
+		if cmd := get("command"); len(cmd) > 0 {
+			wrapped, err := json.Marshal(map[string]json.RawMessage{"command": cmd})
+			if err == nil {
+				env.ToolInput = wrapped
+			}
+			if env.ToolName == "" {
+				env.ToolName = bashTool
+			}
+		}
+	}
+	if env.Event == "" {
+		return envelope{}, false
+	}
+	return env, true
+}
+
+func firstRaw(v json.RawMessage) json.RawMessage {
+	if len(v) == 0 || string(v) == "null" {
+		return nil
+	}
+	return v
+}
+
+func normalizeEvent(s string) string {
+	switch s {
+	case "PreToolUse", "pre_tool_use", "preToolUse", "beforeShellExecution", "beforeMCPExecution":
+		return "PreToolUse"
+	case "PostToolUse", "post_tool_use", "postToolUse", "afterShellExecution", "afterMCPExecution", "afterFileEdit":
+		return "PostToolUse"
+	default:
+		return ""
+	}
+}
+
+func isShellTool(name string) bool {
+	return shellTools[name]
 }
 
 func (d Deps) sub(alias string) string {
@@ -91,7 +172,7 @@ func (d Deps) preToolUse(env envelope) []byte {
 		return nil // fail open
 	}
 	text := string(env.ToolInput)
-	isBash := env.ToolName == bashTool
+	isBash := isShellTool(env.ToolName)
 	changed := false
 	created := false
 

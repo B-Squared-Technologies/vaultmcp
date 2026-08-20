@@ -193,3 +193,56 @@ func TestUnknownAliasNotExpanded(t *testing.T) {
 		t.Fatalf("unknown alias should not be expanded: %s", out)
 	}
 }
+
+func TestGrokPreToolUseCamelCaseAndShellName(t *testing.T) {
+	d := testDeps(t)
+	in := `{"hookEventName":"pre_tool_use","toolName":"run_terminal_command","toolInput":{"command":"aws configure set key ` + awsKey + `"}}`
+	out := string(Process([]byte(in), d))
+	if out == "" {
+		t.Fatal("expected Grok PreToolUse to rewrite")
+	}
+	if strings.Contains(out, awsKey) {
+		t.Fatalf("raw secret leaked: %s", out)
+	}
+	if !strings.Contains(out, fakeExe+" get AWS_ACCESS_KEY") {
+		t.Fatalf("expected shell substitution for run_terminal_command, got: %s", out)
+	}
+}
+
+func TestGrokPostToolUseToolResult(t *testing.T) {
+	d := testDeps(t)
+	in := `{"hookEventName":"post_tool_use","toolName":"run_terminal_command","toolResult":{"stdout":"AWS_KEY=` + awsKey + `\n"}}`
+	out := string(Process([]byte(in), d))
+	if out == "" {
+		t.Fatal("expected Grok PostToolUse to redact")
+	}
+	if strings.Contains(out, awsKey) {
+		t.Fatalf("secret leaked: %s", out)
+	}
+	if !strings.Contains(out, "[vault:AWS_ACCESS_KEY]") {
+		t.Fatalf("expected placeholder, got: %s", out)
+	}
+}
+
+func TestCodexPreToolUseMatchesClaude(t *testing.T) {
+	d := testDeps(t)
+	out := runPre(t, d, "Bash", `{"command":"aws configure set key `+awsKey+`"}`)
+	if !strings.Contains(out, fakeExe+" get AWS_ACCESS_KEY") {
+		t.Fatalf("Codex/Claude Bash payload should substitute: %s", out)
+	}
+}
+
+func TestCursorBeforeShellExecution(t *testing.T) {
+	d := testDeps(t)
+	in := `{"hookEventName":"beforeShellExecution","command":"aws configure set key ` + awsKey + `"}`
+	out := string(Process([]byte(in), d))
+	if out == "" {
+		t.Fatal("expected Cursor beforeShellExecution to rewrite")
+	}
+	if strings.Contains(out, awsKey) {
+		t.Fatalf("raw secret leaked: %s", out)
+	}
+	if !strings.Contains(out, fakeExe+" get AWS_ACCESS_KEY") {
+		t.Fatalf("expected shell substitution, got: %s", out)
+	}
+}

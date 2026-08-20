@@ -84,10 +84,68 @@ func cmdInstall(args []string) error {
 		fmt.Printf("  hooks already registered in %s\n", sp)
 	} else {
 		fmt.Printf("  registered %d hook(s) in %s\n", added, sp)
-		fmt.Println("  VaultMCP will now intercept credentials in Claude Code.")
 	}
+	if global {
+		if err := installSiblingHooks(command); err != nil {
+			return err
+		}
+	}
+	fmt.Println("  VaultMCP intercepts credentials in Claude, Grok (via Claude compat), Codex, and Cursor.")
 	if !keyringReady() {
 		fmt.Println("  note: OS keychain unavailable — run 'vaultmcp set' to use passphrase mode.")
+	}
+	return nil
+}
+
+// installSiblingHooks registers the same hook in Codex and Cursor user config.
+// Grok already loads ~/.claude/settings.json hooks when Claude compat is on.
+func installSiblingHooks(command string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	targets := []string{
+		filepath.Join(home, ".codex", "hooks.json"),
+		filepath.Join(home, ".cursor", "hooks.json"),
+	}
+	for _, path := range targets {
+		if err := writeHarnessHooks(path, command); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeHarnessHooks(path, command string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return err
+	}
+	settings := map[string]any{}
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &settings)
+	}
+	hooks, _ := settings["hooks"].(map[string]any)
+	if hooks == nil {
+		hooks = map[string]any{}
+	}
+	added := 0
+	for _, event := range []string{"PreToolUse", "PostToolUse"} {
+		if ensureHook(hooks, event, command) {
+			added++
+		}
+	}
+	settings["hooks"] = hooks
+	out, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		return err
+	}
+	if added == 0 {
+		fmt.Printf("  hooks already registered in %s\n", path)
+	} else {
+		fmt.Printf("  registered %d hook(s) in %s\n", added, path)
 	}
 	return nil
 }
