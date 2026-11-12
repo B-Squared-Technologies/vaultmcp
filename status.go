@@ -42,6 +42,11 @@ func cmdStatus(args []string) error {
 		fmt.Println("  keychain: unavailable — passphrase mode")
 	}
 
+	// What the vault holds. Never prompts: master is nil while the vault is
+	// locked, and the counts then just show less.
+	master, _ := masterKeyNonInteractive(p)
+	writeVaultCounts(os.Stdout, p, master)
+
 	// Hook registration
 	if where := hookRegistered(); where != "" {
 		fmt.Printf("  hooks:   registered (%s)\n", where)

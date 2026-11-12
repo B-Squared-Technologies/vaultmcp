@@ -27,6 +27,24 @@ type pattern struct {
 	kind string
 }
 
+// entropyKind is the type reported for a hit of the entropy scan.
+const entropyKind = "high_entropy_secret"
+
+// Kinds returns every credential type Find can report, each once. It is the
+// single source of truth for what a hook-generated alias can be named after,
+// so the capture migration never keeps its own copy of this list.
+func Kinds() []string {
+	out := []string{entropyKind}
+	seen := map[string]bool{entropyKind: true}
+	for _, p := range known {
+		if !seen[p.kind] {
+			seen[p.kind] = true
+			out = append(out, p.kind)
+		}
+	}
+	return out
+}
+
 // Go's regexp (RE2) has no backreferences but covers everything needed here.
 var known = []pattern{
 	{regexp.MustCompile(`AKIA[0-9A-Z]{16}`), "aws_access_key"},
@@ -143,27 +161,88 @@ var alnumRun = regexp.MustCompile(`[A-Za-z0-9]+`)
 // stay unaffected.
 func isWordChain(tok string) bool {
 	runs := alnumRun.FindAllString(tok, -1)
-	if len(runs) < 2 {
+	if len(runs) == 0 {
 		return false
 	}
+	shortMixed := 0
+	wordish := 0
 	for _, run := range runs {
 		if len(run) <= 3 {
+			if runMixesAlphaAndDigit(run) {
+				shortMixed++
+			} else {
+				wordish++
+			}
 			continue
 		}
-		hasDigit := false
-		hasAlpha := false
-		for _, c := range run {
-			if c >= '0' && c <= '9' {
-				hasDigit = true
-			} else {
-				hasAlpha = true
-			}
-		}
-		if hasDigit && hasAlpha {
+		if !runIsWordLike(run) {
 			return false
 		}
+		wordish++
+	}
+	// Short mixed chunks are benign inside real word chains (SVG path data is
+	// full of them, but pure runs dominate there). When they OUTNUMBER the
+	// word-like runs the token is license-key shaped (LICENSE=Ab1-Cd2-Ef3-Gh4:
+	// one word run, six mixed chunks) - let the entropy test judge it instead
+	// of exempting it.
+	if shortMixed >= 3 && shortMixed > wordish {
+		return false
 	}
 	return true
+}
+
+func runMixesAlphaAndDigit(run string) bool {
+	hasDigit := false
+	hasAlpha := false
+	for _, c := range run {
+		if c >= '0' && c <= '9' {
+			hasDigit = true
+		} else {
+			hasAlpha = true
+		}
+	}
+	return hasDigit && hasAlpha
+}
+
+// runIsWordLike reports whether one maximal alphanumeric run reads as
+// identifier/word material rather than key material. Pure letters and pure
+// digits qualify (the separator-joined chains of the 2026-07-30 incident).
+// 2026-08-03 addition: camelCase identifiers with ONE short interior digit
+// cluster (bytes + Base64 + Encoded shapes, Sha256, Utf8) are a single
+// mixed run and were still being vaulted out of Write inputs. Random key
+// material scatters digits through the run (several clusters), so a lone
+// digit cluster stays word-like while dashed random keys keep tripping the
+// scan. 2026-08-14: cap raised 3 -> 5. Round numbers and years are common
+// lone clusters in identifiers (Under1000Lbs, Sha256 vs year2026, port8080)
+// and a single digit block flanked by letter runs carries almost no entropy;
+// the multi-cluster and short-mixed shapes remain the key-material tells.
+func runIsWordLike(run string) bool {
+	digitClusters := 0
+	clusterLen := 0
+	maxClusterLen := 0
+	inCluster := false
+	hasAlpha := false
+	for _, c := range run {
+		if c >= '0' && c <= '9' {
+			if !inCluster {
+				digitClusters++
+				clusterLen = 0
+				inCluster = true
+			}
+			clusterLen++
+			if clusterLen > maxClusterLen {
+				maxClusterLen = clusterLen
+			}
+		} else {
+			hasAlpha = true
+			inCluster = false
+		}
+	}
+	if digitClusters == 0 || !hasAlpha {
+		// Pure letters, or pure digits (project numbers, timestamps).
+		return true
+	}
+	return digitClusters == 1 && maxClusterLen <= 5
 }
 
 func isAllowlisted(tok string) bool {
@@ -214,10 +293,13 @@ func Find(text string) []Match {
 		// and defeats the anchored allowlist shapes — strip it before any
 		// check so a UUID followed by a period is still recognized as a UUID.
 		val = strings.TrimRight(val, ".,:;!?")
-		if seen[val] || isAllowlisted(val) || looksLikePath(val) || isWordChain(val) {
+		// Length bounds FIRST: isWordChain allocates a slice of every
+		// alphanumeric run, so a huge unbroken token must be discarded before
+		// the parsers run, not after.
+		if len(val) < minTokenLen || len(val) > maxTokenLen {
 			continue
 		}
-		if len(val) < minTokenLen || len(val) > maxTokenLen {
+		if seen[val] || isAllowlisted(val) || looksLikePath(val) || isWordChain(val) {
 			continue
 		}
 		// Code identifiers (camelCase, PascalCase, dotted member access) routinely
@@ -234,7 +316,7 @@ func Find(text string) []Match {
 			continue
 		}
 		if shannonEntropy(val) >= entropyThreshold {
-			out = append(out, Match{Value: val, Type: "high_entropy_secret"})
+			out = append(out, Match{Value: val, Type: entropyKind})
 			seen[val] = true
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/B-Squared-Technologies/vaultmcp/internal/capture"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/crypto"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/vault"
 )
@@ -17,13 +18,24 @@ func testDeps(t *testing.T) Deps {
 	t.Helper()
 	dir := t.TempDir()
 	p := vault.Paths{
-		Dir:   dir,
-		Store: dir + "/store.enc",
-		Key:   dir + "/key.enc",
-		Meta:  dir + "/meta.json",
-		Audit: dir + "/audit.log",
+		Dir:      dir,
+		Store:    dir + "/store.enc",
+		Key:      dir + "/key.enc",
+		Meta:     dir + "/meta.json",
+		Audit:    dir + "/audit.log",
+		Captured: dir + "/captured",
 	}
-	return Deps{Paths: p, MasterKey: crypto.NewKey(), ExePath: fakeExe, Now: time.Unix(0, 0)}
+	master := crypto.NewKey()
+	return Deps{Paths: p, MasterKey: master, CaptureKey: fixedKey(capture.Key(master, "test-machine")), ExePath: fakeExe, Now: time.Unix(0, 0)}
+}
+
+func fixedKey(k []byte) func() []byte {
+	return func() []byte { return k }
+}
+
+// awsAlias is the alias the hook gives awsKey when it captures it.
+func awsAlias(d Deps) string {
+	return capture.Alias(d.CaptureKey(), "aws_access_key", awsKey)
 }
 
 func runPre(t *testing.T, d Deps, tool, input string) string {
@@ -41,11 +53,11 @@ func TestPreBashIngressVaultsAndSubstitutes(t *testing.T) {
 	if strings.Contains(out, awsKey) {
 		t.Fatalf("raw secret leaked into hook output: %s", out)
 	}
-	if !strings.Contains(out, fakeExe+" get AWS_ACCESS_KEY") {
+	if !strings.Contains(out, fakeExe+" get "+awsAlias(d)) {
 		t.Fatalf("expected command substitution, got: %s", out)
 	}
 	// Output must be valid hook JSON with updatedInput.
-	var parsed preOutput
+	var parsed claudePreOutput
 	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
 		t.Fatalf("output not valid hook JSON: %v", err)
 	}
@@ -55,13 +67,14 @@ func TestPreBashIngressVaultsAndSubstitutes(t *testing.T) {
 	if parsed.HookSpecificOutput.PermissionDecision != "allow" {
 		t.Fatalf("expected allow, got %q", parsed.HookSpecificOutput.PermissionDecision)
 	}
-	// The secret is now retrievable from the store.
-	store, err := vault.Load(d.Paths.Store, d.MasterKey)
+	assertNoCursorRootFields(t, out)
+	// The secret is now retrievable from its capture file.
+	got, err := capture.Read(d.Paths.Captured, d.CaptureKey(), awsAlias(d))
 	if err != nil {
-		t.Fatalf("load: %v", err)
+		t.Fatalf("read capture: %v", err)
 	}
-	if store["AWS_ACCESS_KEY"] != awsKey {
-		t.Fatalf("store did not capture the secret: %+v", store)
+	if got.Value != awsKey || got.Kind != "aws_access_key" || got.Tool != "Bash" {
+		t.Fatalf("capture does not hold the secret and where it came from: kind=%q tool=%q", got.Kind, got.Tool)
 	}
 }
 
@@ -85,10 +98,10 @@ func TestPreNonBashUsesPlaceholder(t *testing.T) {
 	if strings.Contains(out, awsKey) {
 		t.Fatalf("secret leaked in non-Bash output: %s", out)
 	}
-	if !strings.Contains(out, "[vault:AWS_ACCESS_KEY]") {
+	if !strings.Contains(out, "[vault:"+awsAlias(d)+"]") {
 		t.Fatalf("expected [vault:ALIAS] placeholder, got: %s", out)
 	}
-	if strings.Contains(out, "get AWS_ACCESS_KEY") {
+	if strings.Contains(out, "get "+awsAlias(d)) {
 		t.Fatalf("non-Bash tool must NOT get a command substitution: %s", out)
 	}
 }
@@ -113,7 +126,7 @@ func TestPostToolUseRedactsResult(t *testing.T) {
 	if err := json.Unmarshal(parsed.HookSpecificOutput.UpdatedToolOutput, &got); err != nil {
 		t.Fatalf("updatedToolOutput is not a JSON string: %v", err)
 	}
-	want := "AWS_KEY=[vault:AWS_ACCESS_KEY]\n"
+	want := "AWS_KEY=[vault:" + awsAlias(d) + "]\n"
 	if got != want {
 		t.Fatalf("updatedToolOutput = %q, want %q", got, want)
 	}
@@ -142,7 +155,7 @@ func TestPostToolUseRedactsObjectResult(t *testing.T) {
 	if err := json.Unmarshal(parsed.HookSpecificOutput.UpdatedToolOutput, &obj); err != nil {
 		t.Fatalf("updatedToolOutput must be an object, got: %s", parsed.HookSpecificOutput.UpdatedToolOutput)
 	}
-	if obj["stdout"] != "AWS_KEY=[vault:AWS_ACCESS_KEY]\n" {
+	if obj["stdout"] != "AWS_KEY=[vault:"+awsAlias(d)+"]\n" {
 		t.Fatalf("stdout not redacted: %v", obj["stdout"])
 	}
 	// Non-string fields are preserved untouched.
@@ -172,15 +185,9 @@ func TestIdempotentAliasOnRepeatedSecret(t *testing.T) {
 	d := testDeps(t)
 	runPre(t, d, "Bash", `{"command":"echo `+awsKey+`"}`)
 	runPre(t, d, "Bash", `{"command":"echo `+awsKey+` again"}`)
-	store, _ := vault.Load(d.Paths.Store, d.MasterKey)
-	count := 0
-	for _, v := range store {
-		if v == awsKey {
-			count++
-		}
-	}
-	if count != 1 {
-		t.Fatalf("expected the secret vaulted once, found %d aliases: %+v", count, store)
+	count, err := capture.Count(d.Paths.Captured)
+	if err != nil || count != 1 {
+		t.Fatalf("expected the secret captured once, found %d capture files (err=%v)", count, err)
 	}
 }
 
@@ -191,5 +198,151 @@ func TestUnknownAliasNotExpanded(t *testing.T) {
 	out := runPre(t, d, "Bash", `{"command":"echo [vault:NOPE]"}`)
 	if strings.Contains(out, "get NOPE") {
 		t.Fatalf("unknown alias should not be expanded: %s", out)
+	}
+}
+
+func TestGrokPreToolUseCamelCaseAndShellName(t *testing.T) {
+	d := testDeps(t)
+	in := `{"hookEventName":"pre_tool_use","toolName":"run_terminal_command","toolInput":{"command":"aws configure set key ` + awsKey + `"}}`
+	out := string(Process([]byte(in), d))
+	if out == "" {
+		t.Fatal("expected Grok PreToolUse to rewrite")
+	}
+	if strings.Contains(out, awsKey) {
+		t.Fatalf("raw secret leaked: %s", out)
+	}
+	if !strings.Contains(out, fakeExe+" get "+awsAlias(d)) {
+		t.Fatalf("expected shell substitution for run_terminal_command, got: %s", out)
+	}
+	assertNoCursorRootFields(t, out)
+}
+
+func TestGrokPostToolUseToolResult(t *testing.T) {
+	d := testDeps(t)
+	in := `{"hookEventName":"post_tool_use","toolName":"run_terminal_command","toolResult":{"stdout":"AWS_KEY=` + awsKey + `\n"}}`
+	out := string(Process([]byte(in), d))
+	if out == "" {
+		t.Fatal("expected Grok PostToolUse to redact")
+	}
+	if strings.Contains(out, awsKey) {
+		t.Fatalf("secret leaked: %s", out)
+	}
+	if !strings.Contains(out, "[vault:"+awsAlias(d)+"]") {
+		t.Fatalf("expected placeholder, got: %s", out)
+	}
+}
+
+func TestCodexPreToolUseMatchesClaude(t *testing.T) {
+	d := testDeps(t)
+	out := runPre(t, d, "Bash", `{"command":"aws configure set key `+awsKey+`"}`)
+	if !strings.Contains(out, fakeExe+" get "+awsAlias(d)) {
+		t.Fatalf("Codex/Claude Bash payload should substitute: %s", out)
+	}
+	assertNoCursorRootFields(t, out)
+	if !strings.Contains(out, `"hookSpecificOutput"`) {
+		t.Fatalf("Codex/Claude rewrite must use hookSpecificOutput: %s", out)
+	}
+}
+
+func TestCursorBeforeShellExecution(t *testing.T) {
+	d := testDeps(t)
+	in := `{"hook_event_name":"beforeShellExecution","command":"aws configure set key ` + awsKey + `"}`
+	out := string(Process([]byte(in), d))
+	if out == "" {
+		t.Fatal("expected Cursor beforeShellExecution to rewrite")
+	}
+	if strings.Contains(out, awsKey) {
+		t.Fatalf("raw secret leaked: %s", out)
+	}
+	if !strings.Contains(out, fakeExe+" get "+awsAlias(d)) {
+		t.Fatalf("expected shell substitution, got: %s", out)
+	}
+	var parsed cursorPreOutput
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("output not valid JSON: %v", err)
+	}
+	if parsed.Permission != "allow" {
+		t.Fatalf("Cursor permission: %q", parsed.Permission)
+	}
+	if !strings.Contains(string(parsed.UpdatedInput), fakeExe+" get "+awsAlias(d)) {
+		t.Fatalf("Cursor updated_input missing substitution: %s", parsed.UpdatedInput)
+	}
+	if strings.Contains(out, "hookSpecificOutput") {
+		t.Fatalf("Cursor output must not include Claude hookSpecificOutput: %s", out)
+	}
+}
+
+func TestCursorPreToolUseShell(t *testing.T) {
+	d := testDeps(t)
+	in := `{"hook_event_name":"preToolUse","tool_name":"Shell","tool_input":{"command":"aws configure set key ` + awsKey + `"}}`
+	out := string(Process([]byte(in), d))
+	if !strings.Contains(out, fakeExe+" get "+awsAlias(d)) {
+		t.Fatalf("expected Shell substitution, got: %s", out)
+	}
+	if strings.Contains(out, "hookSpecificOutput") {
+		t.Fatalf("Cursor output must not include Claude hookSpecificOutput: %s", out)
+	}
+	if !strings.Contains(out, `"updated_input"`) {
+		t.Fatalf("Cursor rewrite must use updated_input: %s", out)
+	}
+}
+
+func assertNoCursorRootFields(t *testing.T, out string) {
+	t.Helper()
+	if strings.Contains(out, `"permission":`) {
+		t.Fatalf("Claude/Codex/Grok output must not include Cursor permission: %s", out)
+	}
+	if strings.Contains(out, `"updated_input"`) {
+		t.Fatalf("Claude/Codex/Grok output must not include Cursor updated_input: %s", out)
+	}
+}
+
+// A secret the hook meets again hours later is still in play: its capture
+// must count as used, or it could expire a week after it was first seen while
+// its alias is still being handed out.
+func TestSecretSeenAgainCountsAsUsed(t *testing.T) {
+	d := testDeps(t)
+	used := func() bool {
+		t.Helper()
+		items, err := capture.List(d.Paths.Captured, d.CaptureKey())
+		if err != nil || len(items) != 1 {
+			t.Fatalf("want one capture, got %d (err=%v)", len(items), err)
+		}
+		return items[0].Used
+	}
+	// Seen in a tool result both times. A secret taken out of a tool input
+	// starts as used for another reason: see captures_test.go.
+	result := `{"stdout":"k=` + awsKey + `","stderr":""}`
+
+	runPost(d, "Bash", result)
+	if used() {
+		t.Fatal("a fresh capture must be never-used")
+	}
+	d.Now = d.Now.Add(2 * time.Hour)
+	if out := runPost(d, "Bash", result); !strings.Contains(out, awsAlias(d)) {
+		t.Fatalf("second run did not reuse the alias: %s", out)
+	}
+	if !used() {
+		t.Fatal("a secret met again must mark its capture used")
+	}
+}
+
+// Deriving the capture key means reading the machine id, a process launch on
+// macOS. A run that captures nothing must not pay for it: not a plain command,
+// and not the expansion of an alias that already has a capture file.
+func TestCaptureKeyNotDerivedUnlessCapturing(t *testing.T) {
+	d := testDeps(t)
+	runPre(t, d, "Write", `{"file_path":"/x","content":"k=`+awsKey+`"}`)
+	alias := awsAlias(d)
+
+	d.CaptureKey = func() []byte {
+		t.Fatal("capture key derived on a run that captured nothing")
+		return nil
+	}
+	if out := runPre(t, d, "Bash", `{"command":"ls -la"}`); out != "" {
+		t.Fatalf("plain command was rewritten: %s", out)
+	}
+	if out := runPre(t, d, "Bash", `{"command":"echo [vault:`+alias+`]"}`); !strings.Contains(out, fakeExe+" get "+alias) {
+		t.Fatalf("existing capture alias was not expanded: %s", out)
 	}
 }

@@ -95,3 +95,37 @@ func Verify(path string) (bool, error) {
 	}
 	return true, nil
 }
+
+// Read returns every entry in the log, oldest first. Lines that do not parse
+// are skipped rather than failing the read: a caller deciding what an alias's
+// history allows must not be blocked by one damaged line. A missing log is an
+// empty history.
+func Read(path string) ([]Entry, error) {
+	out, _, err := ReadCounting(path)
+	return out, err
+}
+
+// ReadCounting is Read that also says how many lines it had to skip. A caller
+// that decides something from the log can then tell its user the log has
+// holes, instead of deciding in silence from what is left. Blank lines are
+// not counted: every log ends in one.
+func ReadCounting(path string) (entries []Entry, skipped int, err error) {
+	// #nosec G304 -- path is internally derived (~/.vaultmcp/audit.log).
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, 0, nil
+		}
+		return nil, 0, err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		var e Entry
+		switch {
+		case json.Unmarshal([]byte(line), &e) == nil:
+			entries = append(entries, e)
+		case strings.TrimSpace(line) != "":
+			skipped++
+		}
+	}
+	return entries, skipped, nil
+}

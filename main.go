@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/B-Squared-Technologies/vaultmcp/internal/audit"
-	"github.com/B-Squared-Technologies/vaultmcp/internal/hook"
+	"github.com/B-Squared-Technologies/vaultmcp/internal/capture"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/keyring"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/vault"
 	"golang.org/x/term"
@@ -24,13 +24,15 @@ const usage = `vaultmcp — keep secrets out of Claude Code's transcript
 Usage:
   vaultmcp set <alias> [value]   Store a secret (prompts for value if omitted)
   vaultmcp get <alias>           Print a secret value (pipe-friendly)
-  vaultmcp list                  List aliases (values masked)
+  vaultmcp list [--captured]     List named secrets, or the hook's captures (values masked)
   vaultmcp delete <alias> [--yes]  Remove a secret (--yes skips the confirm)
+  vaultmcp prune [--dry-run]     Delete expired captures
+  vaultmcp migrate-captures [--apply] [--names]  Move old hook captures out of store.enc (dry run without --apply)
   vaultmcp status                Show vault + hook health
   vaultmcp audit [--last N]      Show the audit log
   vaultmcp unlock                Cache the key for this machine/session
-  vaultmcp lock                  Clear the cached key
-  vaultmcp install [--global]    Register hooks in this project (or ~/.claude with --global)
+  vaultmcp lock                  Remove the key from the OS keychain (refused when that is its only copy)
+  vaultmcp install [--global]    Register hooks (project .claude, or ~/.claude + Codex/Cursor with --global)
   vaultmcp export-aliases        Print alias list for CLAUDE.md
   vaultmcp hook                  (internal) run as a Claude Code hook`
 
@@ -52,6 +54,10 @@ func main() {
 		err = cmdList(args)
 	case "delete", "remove":
 		err = cmdDelete(args)
+	case "prune":
+		err = cmdPrune(args)
+	case "migrate-captures":
+		err = cmdMigrateCaptures(args)
 	case "status":
 		err = cmdStatus(args)
 	case "audit":
@@ -92,21 +98,7 @@ func cmdHook() error {
 	if err != nil || len(stdin) == 0 {
 		return nil
 	}
-	p := paths()
-	key, err := masterKeyNonInteractive(p)
-	if err != nil {
-		// Locked and non-interactive: cannot vault now. Fail open silently so
-		// we never block the tool call. (status/unlock guide the user.)
-		return nil
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		return nil
-	}
-	out := hook.Process(stdin, hook.Deps{Paths: p, MasterKey: key, ExePath: exe, Now: time.Now()})
-	if out != nil {
-		_, _ = os.Stdout.Write(out)
-	}
+	runHook(stdin, os.Stdout, paths(), time.Now())
 	return nil
 }
 
@@ -116,6 +108,11 @@ func cmdSet(args []string) error {
 	}
 	alias := normalizeAlias(args[0])
 	p := paths()
+	// Named secrets are looked up first, so a named entry with a capture's
+	// alias would silently change what existing placeholders resolve to.
+	if capture.Exists(p.Captured, alias) {
+		return fmt.Errorf("[%s] is already the alias of a captured secret — choose another name, or run 'vaultmcp delete %s' first", alias, alias)
+	}
 	key, err := masterKeyInteractive(p, true)
 	if err != nil {
 		return err
@@ -163,13 +160,9 @@ func cmdGet(args []string) error {
 	if err != nil {
 		return fmt.Errorf("vault is locked — run 'vaultmcp unlock' or set VAULTMCP_KEY")
 	}
-	store, err := vault.Load(p.Store, key)
+	val, err := resolve(p, key, alias, time.Now())
 	if err != nil {
 		return err
-	}
-	val, ok := store[alias]
-	if !ok {
-		return fmt.Errorf("no secret for alias [%s]", alias)
 	}
 	_ = audit.Log(p.Audit, "get", alias, "cli", time.Now())
 	// Raw value when piped, so $(vaultmcp get X) is clean; add a newline on a
@@ -182,26 +175,21 @@ func cmdGet(args []string) error {
 }
 
 func cmdList(args []string) error {
+	captured := false
+	for _, a := range args {
+		if a == "--captured" {
+			captured = true
+		}
+	}
 	p := paths()
 	key, err := masterKeyInteractive(p, false)
 	if err != nil {
 		return fmt.Errorf("vault is locked — run 'vaultmcp unlock'")
 	}
-	store, err := vault.Load(p.Store, key)
-	if err != nil {
-		return err
+	if captured {
+		return listCaptured(os.Stdout, p, key, time.Now())
 	}
-	if len(store) == 0 {
-		fmt.Println("  vault is empty")
-		return nil
-	}
-	aliases := sortedKeys(store)
-	fmt.Printf("\n  Vault — %d secret(s)\n\n", len(store))
-	for _, a := range aliases {
-		fmt.Printf("  %-36s %s\n", a, mask(store[a]))
-	}
-	fmt.Println()
-	return nil
+	return listNamed(os.Stdout, p, key)
 }
 
 func cmdDelete(args []string) error {
@@ -229,7 +217,9 @@ func cmdDelete(args []string) error {
 	if err != nil {
 		return err
 	}
-	if _, ok := store[alias]; !ok {
+	// Same order as every lookup: a named secret first, then a capture.
+	_, named := store[alias]
+	if !named && !capture.Exists(p.Captured, alias) {
 		return fmt.Errorf("[%s] not found", alias)
 	}
 	if !yes {
@@ -241,8 +231,12 @@ func cmdDelete(args []string) error {
 			return nil
 		}
 	}
-	delete(store, alias)
-	if err := vault.Save(p.Store, store, key); err != nil {
+	if named {
+		delete(store, alias)
+		if err := vault.Save(p.Store, store, key); err != nil {
+			return err
+		}
+	} else if err := capture.Delete(p.Captured, alias); err != nil {
 		return err
 	}
 	_ = audit.Log(p.Audit, "delete", alias, "cli", time.Now())
@@ -300,6 +294,14 @@ func cmdUnlock(args []string) error {
 }
 
 func cmdLock(args []string) error {
+	// In keychain mode the keychain entry is not a cached copy, it is the
+	// key: `unlock` never puts a key there, only the first `set` does. So it
+	// goes only when key.enc is shown to hold that same key.
+	if k, ok := keyring.FromKeychain(); ok {
+		if err := keyHasFileCopy(paths(), k); err != nil {
+			return err
+		}
+	}
 	if err := keyring.DeleteFromKeychain(); err != nil {
 		return err
 	}
