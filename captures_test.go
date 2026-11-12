@@ -383,7 +383,7 @@ func TestStatusCounts(t *testing.T) {
 	var out bytes.Buffer
 	writeVaultCounts(&out, v.p, v.master)
 	text := out.String()
-	for _, want := range []string{"named:   3 secret(s)", "2 have hook-generated names", "vaultmcp migrate-captures", "captures: 1", "captures open only on this machine"} {
+	for _, want := range []string{"named:   3 secret(s)", "2 have hook-generated names", "vaultmcp migrate-captures", "captures: 1", "new captures are sealed for this machine only"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("status lacks %q:\n%s", want, text)
 		}
@@ -829,6 +829,31 @@ func TestMigrateLeavesOneAuditLine(t *testing.T) {
 		}
 		if got := count(); got != want {
 			t.Fatalf("after apply %d: %d migrate lines, want %d", run+1, got, want)
+		}
+	}
+}
+
+// The store can change while the capture files are being written. The final
+// save must keep a secret that was added meanwhile, and must not take out an
+// entry whose value changed after it was read.
+func TestMigrateKeepsChangesMadeMeanwhile(t *testing.T) {
+	v := newTestVault(t)
+	asRead := vault.Store{"GITHUB_TOKEN_2": fakeToken(2), "JWT_TOKEN": fakeToken(3), "MY_API_KEY": "named"}
+	// Since then: a person added one secret and replaced one of the captures.
+	v.saveStore(t, vault.Store{"GITHUB_TOKEN_2": fakeToken(2), "JWT_TOKEN": "set by hand meanwhile", "MY_API_KEY": "named", "ADDED_MEANWHILE": "new"})
+
+	moved, left, err := dropMoved(v.p, v.master, asRead, []string{"GITHUB_TOKEN_2", "JWT_TOKEN"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := v.loadStore(t)
+	want := vault.Store{"JWT_TOKEN": "set by hand meanwhile", "MY_API_KEY": "named", "ADDED_MEANWHILE": "new"}
+	if moved != 1 || left != len(want) || len(got) != len(want) {
+		t.Fatalf("moved=%d left=%d store=%d entries, want 1, %d, %d", moved, left, len(got), len(want), len(want))
+	}
+	for alias, val := range want {
+		if got[alias] != val {
+			t.Fatalf("[%s] was lost or changed by the final save", alias)
 		}
 	}
 }

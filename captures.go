@@ -199,6 +199,8 @@ func writeVaultCounts(w io.Writer, p vault.Paths, master []byte) {
 	if _, err := machineID(); err != nil {
 		fmt.Fprintln(w, "  lock:    captures are NOT locked to this machine (no machine id available)")
 	} else {
-		fmt.Fprintln(w, "  lock:    captures open only on this machine")
+		// "New", because a capture made in a moment when the id could not be
+		// read was sealed without it and stays that way until it expires.
+		fmt.Fprintln(w, "  lock:    new captures are sealed for this machine only")
 	}
 }

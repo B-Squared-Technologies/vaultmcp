@@ -170,15 +170,35 @@ func migrateCaptures(w io.Writer, p vault.Paths, master, capKey []byte, apply bo
 			return fmt.Errorf("capture [%s] already exists with a different value, store.enc was not changed", alias)
 		}
 	}
-	for _, alias := range m.move {
-		delete(store, alias)
+	moved, left, err := dropMoved(p, master, store, m.move)
+	if err != nil {
+		return err
 	}
-	if err := vault.Save(p.Store, store, master); err != nil {
-		return fmt.Errorf("saving store.enc failed, it still holds every entry: %w", err)
-	}
-	_ = audit.Log(p.Audit, "migrate", "CAPTURES", fmt.Sprintf("moved %d", len(m.move)), now)
-	fmt.Fprintf(w, "\n  Moved %d capture(s). store.enc now holds %d named secret(s).\n\n", len(m.move), len(store))
+	_ = audit.Log(p.Audit, "migrate", "CAPTURES", fmt.Sprintf("moved %d", moved), now)
+	fmt.Fprintf(w, "\n  Moved %d capture(s). store.enc now holds %d named secret(s).\n\n", moved, left)
 	return nil
+}
+
+// dropMoved takes the moved entries out of store.enc. Writing thousands of
+// capture files takes a moment, and a `vaultmcp set` in that moment must not
+// be undone by saving the store as it was read at the start. So the store is
+// loaded again here, and only entries that still hold the value that was
+// moved are removed: anything set or changed meanwhile stays.
+func dropMoved(p vault.Paths, master []byte, asRead vault.Store, move []string) (moved, left int, err error) {
+	current, err := vault.Load(p.Store, master)
+	if err != nil {
+		return 0, 0, fmt.Errorf("re-reading store.enc failed, it was not changed: %w", err)
+	}
+	for _, alias := range move {
+		if v, ok := current[alias]; ok && v == asRead[alias] {
+			delete(current, alias)
+			moved++
+		}
+	}
+	if err := vault.Save(p.Store, current, master); err != nil {
+		return 0, 0, fmt.Errorf("saving store.enc failed, it still holds every entry: %w", err)
+	}
+	return moved, len(current), nil
 }
 
 // copyStore writes an owner-only copy of the sealed store.

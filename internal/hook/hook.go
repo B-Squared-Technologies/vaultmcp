@@ -258,6 +258,12 @@ func (d Deps) aliasFor(store vault.Store, m detect.Match, tool string) (alias st
 		_ = d.Paths.EnsureDir()
 		_ = audit.Log(d.Paths.Audit, "vault", alias, tool, d.Now)
 	} else {
+		// The file was there already. Hand out its alias only if it still
+		// opens to this value: a damaged file would make a placeholder that
+		// can never be resolved.
+		if e, err := capture.Read(d.Paths.Captured, key, alias); err != nil || e.Value != m.Value {
+			return "", false
+		}
 		capture.Seen(d.Paths.Captured, alias, d.Now)
 	}
 	return alias, true

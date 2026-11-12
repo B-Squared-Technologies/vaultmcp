@@ -361,3 +361,23 @@ func TestHookOutputIsStableUnderTheHook(t *testing.T) {
 		t.Fatalf("%d captures, want 1", got)
 	}
 }
+
+// A capture file that no longer opens must not be reused: its alias would be
+// a placeholder nothing can resolve. The hook fails open instead.
+func TestDamagedCaptureIsNotReused(t *testing.T) {
+	d := testDeps(t)
+	input := `{"file_path":"/x","content":"k=` + awsKey + `"}`
+	if out := runPre(t, d, "Write", input); !strings.Contains(out, awsAlias(d)) {
+		t.Fatalf("first run did not capture: %s", out)
+	}
+	path := filepath.Join(d.Paths.Captured, awsAlias(d)+".enc")
+	if err := os.WriteFile(path, []byte("no longer a sealed capture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out := runPre(t, d, "Write", input); out != "" {
+		t.Fatalf("hook reused a capture that does not open: %s", out)
+	}
+	if out := runPost(d, "Bash", `{"stdout":"`+awsKey+`","stderr":""}`); out != "" {
+		t.Fatalf("hook reused a capture that does not open on a result: %s", out)
+	}
+}
