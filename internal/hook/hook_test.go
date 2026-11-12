@@ -310,14 +310,16 @@ func TestSecretSeenAgainCountsAsUsed(t *testing.T) {
 		}
 		return items[0].Used
 	}
-	input := `{"file_path":"/x","content":"k=` + awsKey + `"}`
+	// Seen in a tool result both times. A secret taken out of a tool input
+	// starts as used for another reason: see captures_test.go.
+	result := `{"stdout":"k=` + awsKey + `","stderr":""}`
 
-	runPre(t, d, "Write", input)
+	runPost(d, "Bash", result)
 	if used() {
 		t.Fatal("a fresh capture must be never-used")
 	}
 	d.Now = d.Now.Add(2 * time.Hour)
-	if out := runPre(t, d, "Write", input); !strings.Contains(out, awsAlias(d)) {
+	if out := runPost(d, "Bash", result); !strings.Contains(out, awsAlias(d)) {
 		t.Fatalf("second run did not reuse the alias: %s", out)
 	}
 	if !used() {

@@ -356,6 +356,14 @@ func (d Deps) preToolUse(env envelope) []byte {
 		if isBash {
 			replacement = d.sub(alias)
 		}
+		// The replacement goes where the secret was headed: into a file, or
+		// into a command. From now on it and this capture may be all that is
+		// left of the value, so the capture starts out as used and gets the
+		// 30-day rule, not the 7-day one. A shell is no exception: inside
+		// single quotes or a quoted heredoc the substitution is never run,
+		// so nothing reads the capture, and the text may be on its way into
+		// a file all the same.
+		capture.Mention(d.Paths.Captured, alias, d.Now)
 		if newText := strings.ReplaceAll(text, match.Value, replacement); newText != text {
 			text = newText
 			changed = true

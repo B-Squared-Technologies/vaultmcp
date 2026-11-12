@@ -556,3 +556,57 @@ func TestExpandedCaptureSurvivesThePruneThatFollows(t *testing.T) {
 		t.Fatal("the capture the command is about to read was pruned")
 	}
 }
+
+// A secret the hook takes out of a file being written leaves only its
+// placeholder in that file. That capture starts on the 30-day rule: a week
+// later it must still be there, though nothing ever read it.
+func TestSecretTakenOutOfAFileStartsAsUsed(t *testing.T) {
+	d := testDeps(t)
+	if out := runPre(t, d, "Write", `{"file_path":"/x","content":"k=`+awsKey+`"}`); !strings.Contains(out, placeholder(awsAlias(d))) {
+		t.Fatalf("did not capture: %s", out)
+	}
+	key := d.CaptureKey()
+	if _, err := capture.Prune(d.Paths.Captured, key, d.Now.Add(8*24*time.Hour), 0, false); err != nil {
+		t.Fatal(err)
+	}
+	if !capture.Exists(d.Paths.Captured, awsAlias(d)) {
+		t.Fatal("a capture that is the only copy of a value taken out of a file was deleted after a week")
+	}
+	if _, err := capture.Prune(d.Paths.Captured, key, d.Now.Add(31*24*time.Hour), 0, false); err != nil {
+		t.Fatal(err)
+	}
+	if capture.Exists(d.Paths.Captured, awsAlias(d)) {
+		t.Fatal("it must still expire after 30 days without use")
+	}
+}
+
+// A secret seen only in a tool result was never headed anywhere: it keeps the
+// 7-day rule.
+func TestSecretSeenInAResultKeepsTheSevenDayRule(t *testing.T) {
+	d := testDeps(t)
+	if out := runPost(d, "Bash", `{"stdout":"`+awsKey+`","stderr":""}`); !strings.Contains(out, awsAlias(d)) {
+		t.Fatalf("did not capture: %s", out)
+	}
+	if _, err := capture.Prune(d.Paths.Captured, d.CaptureKey(), d.Now.Add(8*24*time.Hour), 0, false); err != nil {
+		t.Fatal(err)
+	}
+	if capture.Exists(d.Paths.Captured, awsAlias(d)) {
+		t.Fatal("a never-used capture from a tool result outlived 7 days")
+	}
+}
+
+// Inside single quotes a shell never runs the substitution the hook put in,
+// so nothing reads the capture, and the text may be headed into a file. That
+// capture must start on the 30-day rule too.
+func TestSecretInAQuotedShellCommandStartsAsUsed(t *testing.T) {
+	d := testDeps(t)
+	if out := runPre(t, d, "Bash", `{"command":"printf '%s' 'k=`+awsKey+`' > /x"}`); !strings.Contains(out, " get "+awsAlias(d)+")") {
+		t.Fatalf("did not capture: %s", out)
+	}
+	if _, err := capture.Prune(d.Paths.Captured, d.CaptureKey(), d.Now.Add(8*24*time.Hour), 0, false); err != nil {
+		t.Fatal(err)
+	}
+	if !capture.Exists(d.Paths.Captured, awsAlias(d)) {
+		t.Fatal("a capture nothing could read, taken out of a shell command, was deleted after a week")
+	}
+}
