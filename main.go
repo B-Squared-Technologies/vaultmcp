@@ -295,12 +295,12 @@ func cmdUnlock(args []string) error {
 
 func cmdLock(args []string) error {
 	// In keychain mode the keychain entry is not a cached copy, it is the
-	// key: `unlock` never puts a key there, only the first `set` does. With
-	// no key.enc beside it, deleting it would leave everything in the vault
-	// sealed for good.
-	p := paths()
-	if _, ok := keyring.FromKeychain(); ok && !fileExists(p.Key) && holdsSecrets(p) {
-		return fmt.Errorf("the OS keychain holds the only copy of this vault's key (there is no key.enc), and %s holds secrets sealed with it. Removing it would make them unreadable for good, so nothing was changed", p.Dir)
+	// key: `unlock` never puts a key there, only the first `set` does. So it
+	// goes only when key.enc is shown to hold that same key.
+	if k, ok := keyring.FromKeychain(); ok {
+		if err := keyHasFileCopy(paths(), k); err != nil {
+			return err
+		}
 	}
 	if err := keyring.DeleteFromKeychain(); err != nil {
 		return err

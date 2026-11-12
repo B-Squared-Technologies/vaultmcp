@@ -14,11 +14,10 @@ keychain, setting `VAULTMCP_KEY` and then running `vaultmcp set` created a
 new key over the existing vault. The old secrets no longer opened and the
 hook stopped redacting.
 
-0.2.0 closes both. What it cannot do is repair a vault that was already hit:
-if `set` once made a second key on your machine, `lock` can still remove the
-good one. If `vaultmcp list` fails with a decryption error while
-`VAULTMCP_KEY` is set, unset it and try again, and do not run
-`vaultmcp lock` on that machine.
+0.2.0 closes both. It cannot bring back a key that is already gone. If
+`set` once made a second key on your machine, the first one is still in the
+keychain: when `vaultmcp list` fails with a decryption error while
+`VAULTMCP_KEY` is set, unset it and try again.
 
 ### What changed, and why
 
@@ -54,8 +53,10 @@ name.
 
 ### Changes in behaviour
 
-- `vaultmcp lock` refuses when the keychain entry is the only copy of the
-  key and the vault holds secrets.
+- `vaultmcp lock` removes the key from the keychain only when `key.enc`
+  holds the same key, which it checks with the passphrase. Otherwise it
+  refuses. The keychain entry is one per user, shared by every vault
+  folder, so an empty folder is no reason to let it go.
 - `vaultmcp set` refuses to create a new key over a vault that already
   holds secrets.
 - `prune` and `migrate-captures` reject arguments they do not know. Before,

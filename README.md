@@ -112,7 +112,7 @@ export VAULTMCP_KEY="your-passphrase"
 
 Understand the tradeoff: anyone who can read your environment can read that passphrase.
 
-**The key is never replaced by accident.** A vault that already holds secrets was sealed with a key that exists somewhere. If VaultMCP cannot find that key, it stops and says so; it does not make a new one, because a new key would open nothing and would hide the old one. The usual cause is setting `VAULTMCP_KEY` on a machine whose key is in the keychain: unset it and the vault opens again. For the same reason `vaultmcp lock` refuses to remove the keychain entry when there is no `key.enc`, because in keychain mode that entry is the key, not a copy of it.
+**The key is never replaced by accident.** A vault that already holds secrets was sealed with a key that exists somewhere. If VaultMCP cannot find that key, it stops and says so; it does not make a new one, because a new key would open nothing and would hide the old one. The usual cause is setting `VAULTMCP_KEY` on a machine whose key is in the keychain: unset it and the vault opens again. For the same reason `vaultmcp lock` removes the keychain entry only after it has checked that `key.enc` holds the same key (it asks for the passphrase, or uses `VAULTMCP_KEY`). In keychain mode that entry is the key, not a copy of it, and it is one entry per user, shared by every vault folder.
 
 ## What gets detected
 

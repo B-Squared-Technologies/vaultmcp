@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"os"
@@ -17,11 +18,40 @@ var errLocked = errors.New("vault is locked")
 
 // holdsSecrets reports whether the vault folder already has something sealed
 // in it: store.enc, or at least one capture file. Whatever is there was
-// sealed under a master key that already exists somewhere, so this is the one
-// test for both "do not make a new key" and "do not delete the only key".
+// sealed under a master key that already exists somewhere, so a new key must
+// not be made over it.
 func holdsSecrets(p vault.Paths) bool {
-	captures, _ := capture.Count(p.Captured)
-	return fileExists(p.Store) || captures > 0
+	// A captures folder that cannot be listed counts as holding secrets: not
+	// being able to look is no proof that nothing is there.
+	captures, err := capture.Count(p.Captured)
+	return fileExists(p.Store) || captures > 0 || err != nil
+}
+
+// keyHasFileCopy returns nil only when key.enc in this vault folder holds the
+// same master key as the keychain entry, which is what makes that entry safe
+// to remove. Whether this folder holds secrets is deliberately not asked: the
+// keychain entry is one per user, shared by every vault folder, so an empty
+// folder here says nothing about what the key seals elsewhere. A key.enc that
+// merely exists is not enough either: it can hold another key.
+func keyHasFileCopy(p vault.Paths, inKeychain []byte) error {
+	if !fileExists(p.Key) {
+		return fmt.Errorf("the OS keychain holds the only copy of the master key: there is no key.enc in %s. Every vault folder of this user shares that keychain entry, and removing it would make whatever it sealed unreadable for good, so nothing was changed. If you are certain nothing uses it, delete the %q entry in the OS keychain by hand", p.Dir, "vaultmcp")
+	}
+	pass := os.Getenv("VAULTMCP_KEY")
+	if pass == "" {
+		var err error
+		if pass, err = passphrase("Passphrase for key.enc: ", false); err != nil {
+			return errors.New("key.enc could not be checked against the key in the OS keychain without its passphrase, so nothing was changed")
+		}
+	}
+	inFile, err := keyring.UnwrapFromFile(p.Key, pass)
+	if err != nil {
+		return errors.New("key.enc did not open with that passphrase, so it could not be confirmed as a copy of the key in the OS keychain. Nothing was changed")
+	}
+	if subtle.ConstantTimeCompare(inFile, inKeychain) != 1 {
+		return fmt.Errorf("key.enc in %s holds a different key from the one in the OS keychain. Removing the keychain entry would make whatever it sealed unreadable for good, so nothing was changed", p.Dir)
+	}
+	return nil
 }
 
 // refuseNewKey is the error for a `set` that would have had to make a new
