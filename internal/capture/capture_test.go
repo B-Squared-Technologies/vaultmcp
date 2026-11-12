@@ -393,3 +393,47 @@ func TestSeenCountsAsUse(t *testing.T) {
 	}
 	Seen(dir, "../escape", t0) // an invalid alias is ignored, not a panic
 }
+
+// Two hooks capturing the same value can both get past the "is it there yet"
+// check. The later one must not replace the earlier one's file: a read in
+// between would lose its "used" mark.
+func TestPublishNeverReplaces(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "FIRST.enc")
+	if err := os.WriteFile(path, []byte("first"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	used := t0.Add(time.Hour)
+	if err := os.Chtimes(path, used, used); err != nil {
+		t.Fatal(err)
+	}
+	tmp := filepath.Join(dir, "tmp-late")
+	if err := os.WriteFile(tmp, []byte("late"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := publish(tmp, path)
+	if err != nil || created {
+		t.Fatalf("publish over an existing capture: created=%v err=%v", created, err)
+	}
+	got, _ := os.ReadFile(path)
+	fi, _ := os.Stat(path)
+	if string(got) != "first" || !fi.ModTime().Equal(used) {
+		t.Fatalf("the first capture was replaced: %q, mtime %v", got, fi.ModTime())
+	}
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Fatal("temp file left behind")
+	}
+
+	// With nothing in the way it publishes, and leaves no temp file either.
+	fresh := filepath.Join(dir, "SECOND.enc")
+	if err := os.WriteFile(tmp, []byte("second"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if created, err := publish(tmp, fresh); err != nil || !created {
+		t.Fatalf("publish to a free name: created=%v err=%v", created, err)
+	}
+	if n := fileCount(t, dir); n != 2 {
+		t.Fatalf("%d files in the folder, want 2", n)
+	}
+}

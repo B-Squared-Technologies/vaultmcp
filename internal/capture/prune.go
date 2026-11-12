@@ -25,13 +25,19 @@ type PruneResult struct {
 	Unused     int // deleted: never used
 	Stale      int // deleted: used, but not for 30 days
 	Kept       int // used within 30 days
-	Unreadable int // did not open; left alone, they may belong to another machine
+	Unreadable int // did not open, touched within 30 days: left alone
+	Orphaned   int // deleted: did not open and untouched for 30 days
 }
 
 // Prune deletes expired captures: never used and older than 7 days, or used
 // and last used more than 30 days ago. Only files whose mtime is older than 7
 // days are opened. limit caps how many of those one call handles; 0 means all.
 // With dryRun nothing is deleted and the counts say what would be.
+//
+// A file that does not open (sealed on another machine, or in a moment when
+// this machine's id could not be read) is deleted once it has gone untouched
+// for 30 days. No rule would have kept a file that old, whichever key it was
+// sealed with, so nothing is lost that a readable file would have kept.
 func Prune(dir string, key []byte, now time.Time, limit int, dryRun bool) (PruneResult, error) {
 	var r PruneResult
 	aliases, err := scan(dir)
@@ -57,29 +63,59 @@ func Prune(dir string, key []byte, now time.Time, limit int, dryRun bool) (Prune
 			continue
 		}
 		r.Candidates++
+		stale := now.Sub(fi.ModTime()) > usedTTL
 		e, err := Read(dir, key, alias)
-		if err != nil {
-			r.Unreadable++
-			continue
-		}
-		wasUsed := used(e, fi.ModTime())
-		if wasUsed && now.Sub(fi.ModTime()) <= usedTTL {
-			r.Kept++
-			continue
-		}
-		if !dryRun {
-			// Already gone means a parallel prune got there first.
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-				return r, err
+		readable := err == nil
+		wasUsed := readable && used(e, fi.ModTime())
+		if (!readable || wasUsed) && !stale {
+			if readable {
+				r.Kept++
+			} else {
+				r.Unreadable++
 			}
+			continue
 		}
-		if wasUsed {
+		gone, err := expire(path, fi.ModTime(), dryRun)
+		switch {
+		case err != nil:
+			return r, err
+		case !gone:
+			r.Kept++
+		case !readable:
+			r.Orphaned++
+		case wasUsed:
 			r.Stale++
-		} else {
+		default:
 			r.Unused++
 		}
 	}
 	return r, nil
+}
+
+// expire deletes path unless its mtime moved since it was judged. A read, or
+// a hook that met the value again, refreshes the mtime and is about to hand
+// out the alias, so that capture is in use and must stay. The second look
+// leaves only the instant between it and the unlink; losing that means the
+// capture expired a moment early, which is what would have happened had the
+// prune run a moment sooner.
+func expire(path string, judged time.Time, dryRun bool) (gone bool, err error) {
+	if dryRun {
+		return true, nil
+	}
+	fi, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return true, nil // a parallel prune got there first
+	}
+	if err != nil {
+		return false, err
+	}
+	if !fi.ModTime().Equal(judged) {
+		return false, nil
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return false, err
+	}
+	return true, nil
 }
 
 // AutoPrune runs a bounded Prune at most once a day, tracked by the mtime of a

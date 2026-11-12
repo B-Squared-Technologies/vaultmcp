@@ -42,7 +42,8 @@ func TestPruneExpiry(t *testing.T) {
 		{name: "migrated as used, 8 days", migrated: true, age: 8 * day},
 		{name: "migrated as used, 29 days", migrated: true, age: 29 * day},
 		{name: "migrated as used, 31 days", migrated: true, age: 31 * day, wantGone: true},
-		{name: "another machine's file, 400 days", foreign: true, age: 400 * day},
+		{name: "another machine's file, 29 days", foreign: true, age: 29 * day},
+		{name: "another machine's file, 31 days", foreign: true, age: 31 * day, wantGone: true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -82,11 +83,11 @@ func TestPruneExpiry(t *testing.T) {
 			if gone := !Exists(dir, alias); gone != c.wantGone {
 				t.Fatalf("gone = %v, want %v (result %+v)", gone, c.wantGone, got)
 			}
-			if deleted := got.Unused + got.Stale; (deleted == 1) != c.wantGone {
+			if deleted := got.Unused + got.Stale + got.Orphaned; (deleted == 1) != c.wantGone {
 				t.Fatalf("deleted count = %d, wantGone = %v", deleted, c.wantGone)
 			}
-			if c.foreign && (got.Unreadable != 1 || got.Unused+got.Stale+got.Kept != 0) {
-				t.Fatalf("a file that does not open must only be counted: %+v", got)
+			if c.foreign && (got.Unreadable+got.Orphaned != 1 || got.Unused+got.Stale+got.Kept != 0) {
+				t.Fatalf("a file that does not open counts as unreadable or orphaned, nothing else: %+v", got)
 			}
 		})
 	}
@@ -226,5 +227,27 @@ func TestAutoPruneOncePerDay(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(store); string(got) != "sealed store bytes" {
 		t.Fatal("AutoPrune changed store.enc")
+	}
+}
+
+// A capture refreshed after the prune judged it (a read, or a hook that met
+// the value again) is in use and must survive that prune.
+func TestExpireSkipsARefreshedCapture(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "captured")
+	key := testKey("m")
+	alias := put(t, dir, key, "refreshed-mid-prune", t0)
+	path := filepath.Join(dir, alias+ext)
+
+	Seen(dir, alias, t0.Add(8*day)) // lands between the prune's stat and its delete
+	gone, err := expire(path, t0, false)
+	if err != nil || gone || !Exists(dir, alias) {
+		t.Fatalf("a refreshed capture was deleted (gone=%v err=%v)", gone, err)
+	}
+	gone, err = expire(path, t0.Add(8*day), false)
+	if err != nil || !gone || Exists(dir, alias) {
+		t.Fatalf("an unchanged capture was not deleted (gone=%v err=%v)", gone, err)
+	}
+	if gone, err := expire(path, t0, false); err != nil || !gone {
+		t.Fatalf("a file already gone must count as gone (gone=%v err=%v)", gone, err)
 	}
 }

@@ -179,7 +179,7 @@ func writePruneResult(w io.Writer, r capture.PruneResult, dryRun bool) {
 	fmt.Fprintf(w, "  never used:          %d %s\n", r.Unused, deleted)
 	fmt.Fprintf(w, "  unused for 30 days:  %d %s\n", r.Stale, deleted)
 	fmt.Fprintf(w, "  used in last 30d:    %d kept\n", r.Kept)
-	fmt.Fprintf(w, "  not readable here:   %d left alone (may belong to another machine)\n\n", r.Unreadable)
+	fmt.Fprintf(w, "  not readable here:   %d left alone, %d untouched for 30 days %s\n\n", r.Unreadable, r.Orphaned, deleted)
 }
 
 // writeVaultCounts reports what the vault holds. master is nil while the

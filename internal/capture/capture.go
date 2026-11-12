@@ -152,14 +152,28 @@ func Write(dir string, key []byte, alias string, e Entry) (created bool, err err
 		_ = os.Remove(tmp)
 		return false, err
 	}
+	return publish(tmp, path)
+}
+
+// publish moves the finished temp file to its final name without ever
+// replacing a file that is already there. Two hooks that capture the same
+// value at the same moment both get this far; a plain rename would let the
+// later one overwrite the earlier one's file, and with it a "used" mark a
+// read had set in between. A hard link fails if the name exists, which makes
+// "first one wins" atomic.
+func publish(tmp, path string) (created bool, err error) {
+	defer func() { _ = os.Remove(tmp) }()
+	linkErr := os.Link(tmp, path)
+	if linkErr == nil {
+		return true, nil
+	}
+	if fi, statErr := os.Stat(path); statErr == nil && fi.Mode().IsRegular() {
+		return false, nil // a parallel hook captured the same value first
+	}
+	// No hard links on this filesystem: a rename is the best there is, and a
+	// capture that cannot be stored would mean a secret that is not redacted.
 	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		if Exists(dir, alias) {
-			// A parallel hook captured the same value first (Windows refuses
-			// to replace a file another process is renaming into place).
-			return false, nil
-		}
-		return false, err
+		return false, linkErr
 	}
 	return true, nil
 }
