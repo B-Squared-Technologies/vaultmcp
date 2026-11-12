@@ -81,3 +81,35 @@ func Open(key, blob []byte) ([]byte, error) {
 	}
 	return pt, nil
 }
+
+// SealBound is Seal with associated data: bytes that are not stored in the
+// output but must be given again, unchanged, to open it. A capture file binds
+// its alias this way, so a sealed file copied to another name does not open
+// there. Seal is deliberately left as it is, so store.enc and key.enc keep
+// their format.
+func SealBound(key, plaintext, bound []byte) ([]byte, error) {
+	aead, err := chacha20poly1305.NewX(key)
+	if err != nil {
+		return nil, err
+	}
+	nonce := Random(nonceSize)
+	return aead.Seal(nonce, nonce, plaintext, bound), nil
+}
+
+// OpenBound reverses SealBound. It returns ErrDecrypt on any authentication
+// failure, which includes being given other bound bytes than the seal was.
+func OpenBound(key, blob, bound []byte) ([]byte, error) {
+	aead, err := chacha20poly1305.NewX(key)
+	if err != nil {
+		return nil, err
+	}
+	if len(blob) < nonceSize {
+		return nil, ErrDecrypt
+	}
+	nonce, ct := blob[:nonceSize], blob[nonceSize:]
+	pt, err := aead.Open(nil, nonce, ct, bound)
+	if err != nil {
+		return nil, ErrDecrypt
+	}
+	return pt, nil
+}

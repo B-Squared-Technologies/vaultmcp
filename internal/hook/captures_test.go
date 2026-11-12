@@ -363,23 +363,175 @@ func TestHookOutputIsStableUnderTheHook(t *testing.T) {
 	}
 }
 
-// A capture file that no longer opens must not be reused: its alias would be
-// a placeholder nothing can resolve. The hook fails open instead.
-func TestDamagedCaptureIsNotReused(t *testing.T) {
+// A capture file that no longer opens (cut short by a crash, or overwritten)
+// must not switch redaction of its value off. The hook holds the value, so it
+// writes the file again and redacts as usual, together with any other secret
+// in the same call.
+func TestDamagedCaptureIsReplaced(t *testing.T) {
 	d := testDeps(t)
-	input := `{"file_path":"/x","content":"k=` + awsKey + `"}`
-	if out := runPre(t, d, "Write", input); !strings.Contains(out, awsAlias(d)) {
-		t.Fatalf("first run did not capture: %s", out)
+	if out := runPre(t, d, "Write", `{"file_path":"/x","content":"k=`+awsKey+`"}`); !strings.Contains(out, awsAlias(d)) {
+		t.Fatal("first run did not capture")
 	}
 	path := filepath.Join(d.Paths.Captured, awsAlias(d)+".enc")
-	if err := os.WriteFile(path, []byte("no longer a sealed capture"), 0o600); err != nil {
+	opens := func(when string) {
+		t.Helper()
+		got, err := capture.Read(d.Paths.Captured, d.CaptureKey(), awsAlias(d))
+		if err != nil || got.Value != awsKey {
+			t.Fatalf("%s: the damaged file was not replaced by one that opens: %v", when, err)
+		}
+	}
+	for name, damage := range map[string][]byte{
+		"an empty file":  nil,
+		"foreign bytes":  []byte("no longer a sealed capture"),
+		"a cut-off file": make([]byte, 30),
+	} {
+		if err := os.WriteFile(path, damage, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out := runPre(t, d, "Write", `{"file_path":"/x","content":"a=`+awsKey+` b=`+fakeAWS(2)+`"}`)
+		if !strings.Contains(out, "a="+placeholder(awsAlias(d))+" b="+placeholder(fakeAlias(d, 2))) {
+			t.Fatalf("%s at the alias: the call was not redacted (output is %d bytes)", name, len(out))
+		}
+		opens(name)
+
+		if err := os.WriteFile(path, damage, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		post := runPost(d, "Bash", `{"stdout":"`+awsKey+`","stderr":""}`)
+		if !strings.Contains(post, placeholder(awsAlias(d))) {
+			t.Fatalf("%s at the alias: the result was not redacted (output is %d bytes)", name, len(post))
+		}
+		opens(name + ", on a result")
+	}
+}
+
+// A capture file that opens to a different value is never replaced: the alias
+// is taken, and handing it out would make the placeholder resolve to the
+// wrong secret. The hook fails open instead.
+func TestCaptureHoldingAnotherValueFailsOpen(t *testing.T) {
+	d := testDeps(t)
+	other := capture.Entry{Value: "some other value", Kind: "aws_access_key", Created: d.Now.UTC().Format(time.RFC3339)}
+	if _, err := capture.Write(d.Paths.Captured, d.CaptureKey(), awsAlias(d), other); err != nil {
 		t.Fatal(err)
 	}
-	if out := runPre(t, d, "Write", input); out != "" {
-		t.Fatalf("hook reused a capture that does not open: %s", out)
+	if out := runPre(t, d, "Write", `{"file_path":"/x","content":"k=`+awsKey+`"}`); out != "" {
+		t.Fatalf("hook handed out an alias that holds another value: %s", out)
 	}
 	if out := runPost(d, "Bash", `{"stdout":"`+awsKey+`","stderr":""}`); out != "" {
-		t.Fatalf("hook reused a capture that does not open on a result: %s", out)
+		t.Fatalf("hook handed out an alias that holds another value, on a result: %s", out)
+	}
+	if got, err := capture.Read(d.Paths.Captured, d.CaptureKey(), awsAlias(d)); err != nil || got != other {
+		t.Fatalf("the capture holding another value was changed: %+v, %v", got, err)
+	}
+}
+
+// reuse is the hook's decision about a capture file that is already there.
+// Each state is put on disk and reuse is called on it directly, which makes
+// exact the one case that otherwise depends on timing: a file that a prune
+// running beside the hook deleted after Write had seen it.
+func TestReuseOfAnExistingCaptureFile(t *testing.T) {
+	cases := []struct {
+		name          string
+		setup         func(t *testing.T, d Deps, path string)
+		rewritten, ok bool
+	}{
+		{name: "opens to the same value", setup: func(*testing.T, Deps, string) {}, ok: true},
+		{name: "opens to another value", setup: func(t *testing.T, d Deps, path string) {
+			e := capture.Entry{Value: "some other value", Kind: "aws_access_key", Created: d.Now.UTC().Format(time.RFC3339)}
+			if err := capture.Replace(d.Paths.Captured, d.CaptureKey(), fakeAlias(d, 1), e); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "gone since Write saw it", rewritten: true, ok: true, setup: func(t *testing.T, d Deps, path string) {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "does not open", rewritten: true, ok: true, setup: func(t *testing.T, d Deps, path string) {
+			if err := os.Truncate(path, 0); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "gone, and cannot be written again", setup: func(t *testing.T, d Deps, path string) {
+			if err := os.RemoveAll(d.Paths.Captured); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(d.Paths.Captured, []byte("in the way"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := testDeps(t)
+			key, alias := d.CaptureKey(), fakeAlias(d, 1)
+			e := capture.Entry{Value: fakeAWS(1), Kind: "aws_access_key", Created: d.Now.UTC().Format(time.RFC3339)}
+			if _, err := capture.Write(d.Paths.Captured, key, alias, e); err != nil {
+				t.Fatal(err)
+			}
+			c.setup(t, d, filepath.Join(d.Paths.Captured, alias+".enc"))
+
+			rewritten, ok := d.reuse(key, alias, e)
+			if rewritten != c.rewritten || ok != c.ok {
+				t.Fatalf("reuse = rewritten %v, ok %v; want %v, %v", rewritten, ok, c.rewritten, c.ok)
+			}
+			// An alias that goes out must have a file behind it that opens to
+			// this value.
+			if got, err := capture.Read(d.Paths.Captured, key, alias); ok && (err != nil || got.Value != e.Value) {
+				t.Fatalf("reuse said yes, but the capture does not open to the value: %v", err)
+			}
+		})
+	}
+}
+
+// A placeholder the model puts into any tool input marks its capture as used,
+// at once. Written into a file, the placeholder and the capture are all that
+// is left of the value, and a capture still counted as never used would be
+// deleted a week later. A placeholder coming back in a tool result is not a
+// use, and none of this needs the capture key.
+func TestPlaceholderInAnyToolInputMarksCaptureUsed(t *testing.T) {
+	for _, tool := range []string{"Write", "Edit", "Bash", "mcp__files__put"} {
+		for name, delay := range map[string]time.Duration{
+			"in the second it was captured": 0,
+			"ten minutes later":             10 * time.Minute,
+		} {
+			t.Run(tool+" "+name, func(t *testing.T) {
+				d := testDeps(t)
+				key, alias := d.CaptureKey(), fakeAlias(d, 1)
+				if out := runPost(d, "Read", `"KEY=`+fakeAWS(1)+`\n"`); !strings.Contains(out, alias) {
+					t.Fatal("the secret was not captured from the tool result")
+				}
+				used := func() bool {
+					t.Helper()
+					items, err := capture.List(d.Paths.Captured, key)
+					if err != nil || len(items) != 1 {
+						t.Fatalf("want one capture, got %d (err=%v)", len(items), err)
+					}
+					return items[0].Used
+				}
+				later := d
+				later.Now = d.Now.Add(delay)
+				later.CaptureKey = func() []byte {
+					t.Fatal("the capture key was derived for a placeholder")
+					return nil
+				}
+
+				runPost(later, "Read", `"KEY=`+placeholder(alias)+`\n"`)
+				if used() {
+					t.Fatal("a placeholder in a tool result marked the capture used")
+				}
+				runPre(t, later, tool, `{"file_path":"/x","content":"KEY=`+placeholder(alias)+`"}`)
+				if !used() {
+					t.Fatal("a placeholder in the tool input did not mark the capture used")
+				}
+				if _, err := capture.Prune(d.Paths.Captured, key, d.Now.Add(8*24*time.Hour), 0, false); err != nil {
+					t.Fatal(err)
+				}
+				if !capture.Exists(d.Paths.Captured, alias) {
+					t.Fatal("the capture a file now points to was pruned as never used")
+				}
+			})
+		}
 	}
 }
 

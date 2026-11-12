@@ -8,7 +8,9 @@
 // on the same file and an alias can never come to mean a different value.
 //
 // Capture files are sealed with a key derived from the master key AND this
-// machine's id, so a copied vault folder does not open them elsewhere.
+// machine's id, so a copied vault folder does not open them elsewhere. Each
+// file is also bound to its own alias: copied to another name, it does not
+// open there.
 package capture
 
 import (
@@ -39,10 +41,17 @@ const (
 	// usedSlack absorbs coarse filesystem timestamps: a file counts as used
 	// only when its mtime is clearly past its creation time.
 	usedSlack = time.Second
+	// usedMark is how far past creation a use puts the mtime at the least. It
+	// must still be clearly past usedSlack after a filesystem that keeps only
+	// even seconds has rounded it down.
+	usedMark = 4 * time.Second
 	// seenAfter is how stale a capture's mtime must be before meeting its
 	// value again moves it. A value that shows up in every tool result must
 	// not cost a write each time.
 	seenAfter = time.Hour
+	// tempPrefix starts the name of a capture file that is still being
+	// written.
+	tempPrefix = "tmp-"
 )
 
 // ErrInvalidAlias means the name cannot be a capture file. It is checked
@@ -115,44 +124,87 @@ func Write(dir string, key []byte, alias string, e Entry) (created bool, err err
 	if Exists(dir, alias) {
 		return false, nil
 	}
-	when, err := time.Parse(time.RFC3339, e.Created)
+	tmp, err := sealToTemp(dir, key, alias, e)
 	if err != nil {
 		return false, err
+	}
+	return publish(tmp, path)
+}
+
+// Replace seals e as the capture file for alias in place of the file that is
+// there. It is for the two callers that know the old file has to go: the
+// hook, when the file no longer opens, and the migration, when the file was
+// left by a run that did not finish. The rename swaps the whole file at once,
+// so a reader sees the old file or the new one, never half of either.
+func Replace(dir string, key []byte, alias string, e Entry) error {
+	path, err := file(dir, alias)
+	if err != nil {
+		return err
+	}
+	tmp, err := sealToTemp(dir, key, alias, e)
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// sealToTemp writes e, sealed for alias, to a finished temp file in dir and
+// returns its name. The caller moves it to its final name.
+func sealToTemp(dir string, key []byte, alias string, e Entry) (tmp string, err error) {
+	when, err := time.Parse(time.RFC3339, e.Created)
+	if err != nil {
+		return "", err
 	}
 	pt, err := json.Marshal(e)
 	if err != nil {
-		return false, err
+		return "", err
 	}
-	blob, err := crypto.Seal(key, pt)
+	// The alias is bound into the seal, so this file opens under this name
+	// only. Without that, anyone able to write to the folder could copy one
+	// capture over another, or to a made-up name, and have that name resolve
+	// to a secret it was never given.
+	blob, err := crypto.SealBound(key, pt, []byte(alias))
 	if err != nil {
-		return false, err
+		return "", err
 	}
 	if err := ensureDir(dir); err != nil {
-		return false, err
+		return "", err
 	}
 	// Temp file in the same directory, then rename: a reader sees either no
 	// file or a complete one. The temp name has no .enc suffix, so a leftover
 	// from a killed process is never taken for a capture.
-	f, err := os.CreateTemp(dir, "tmp-*")
+	f, err := os.CreateTemp(dir, tempPrefix+"*")
 	if err != nil {
-		return false, err
+		return "", err
 	}
-	tmp := f.Name()
+	tmp = f.Name()
 	if _, err := f.Write(blob); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)
-		return false, err
+		return "", err
+	}
+	// Onto the disk before the file gets its final name. A crash right after
+	// could otherwise leave that name on an empty file, and an empty file at
+	// an alias is a capture that does not open.
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return "", err
 	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(tmp)
-		return false, err
+		return "", err
 	}
 	// mtime = created is the "never used" mark; a later read moves it.
 	if err := os.Chtimes(tmp, when, when); err != nil {
 		_ = os.Remove(tmp)
-		return false, err
+		return "", err
 	}
-	return publish(tmp, path)
+	return tmp, nil
 }
 
 // publish moves the finished temp file to its final name without ever
@@ -190,7 +242,8 @@ func ensureDir(dir string) error {
 }
 
 // Read opens the capture file for alias. It fails with crypto.ErrDecrypt when
-// the file was sealed on another machine or is damaged.
+// the file was sealed on another machine, with another key or for another
+// alias, or is damaged.
 func Read(dir string, key []byte, alias string) (Entry, error) {
 	path, err := file(dir, alias)
 	if err != nil {
@@ -201,7 +254,7 @@ func Read(dir string, key []byte, alias string) (Entry, error) {
 	if err != nil {
 		return Entry{}, err
 	}
-	pt, err := crypto.Open(key, blob)
+	pt, err := crypto.OpenBound(key, blob, []byte(alias))
 	if err != nil {
 		return Entry{}, err
 	}
@@ -215,7 +268,7 @@ func Read(dir string, key []byte, alias string) (Entry, error) {
 // Touch records that the capture was just used, by moving its mtime to now.
 // A read within the slack of creation (a shell command runs its substitution
 // right after the hook captured the value) would not register as a use, so
-// the mtime is never set closer to creation than twice the slack.
+// the mtime is never set closer to creation than usedMark.
 func Touch(dir, alias string, e Entry, now time.Time) error {
 	path, err := file(dir, alias)
 	if err != nil {
@@ -223,9 +276,15 @@ func Touch(dir, alias string, e Entry, now time.Time) error {
 	}
 	when := now
 	if created, err := time.Parse(time.RFC3339, e.Created); err == nil {
-		if floor := created.Add(2 * usedSlack); when.Before(floor) {
+		if floor := created.Add(usedMark); when.Before(floor) {
 			when = floor
 		}
+	}
+	// A clock that is behind (a flat battery, a boot before the time was set)
+	// must not pull the last use back: a capture read yesterday would then
+	// look a month stale to the next prune.
+	if fi, err := os.Stat(path); err == nil && when.Before(fi.ModTime()) {
+		return nil
 	}
 	return os.Chtimes(path, when, when)
 }
@@ -244,6 +303,31 @@ func Seen(dir, alias string, now time.Time) {
 		return
 	}
 	_ = os.Chtimes(path, now, now)
+}
+
+// Mention records that a tool input named this capture by its placeholder.
+// The placeholder may be on its way into a file, which then holds the only
+// pointer to the value, so the capture counts as used from this moment, with
+// none of the hour Seen waits.
+//
+// It works from the file's mtime alone, with no key and nothing decrypted,
+// because the hook calls it for every placeholder it meets. Not knowing when
+// the capture was made, it sets the mark usedMark ahead of now: that is
+// clearly past any creation time the file can have, even one in this same
+// second. An mtime already ahead of now is left alone, so the mark never
+// moves back and further mentions in the same moment change nothing. Best
+// effort, like Seen.
+func Mention(dir, alias string, now time.Time) {
+	path, err := file(dir, alias)
+	if err != nil {
+		return
+	}
+	fi, err := os.Stat(path)
+	if err != nil || now.Before(fi.ModTime()) {
+		return
+	}
+	when := now.Add(usedMark)
+	_ = os.Chtimes(path, when, when)
 }
 
 // Delete removes the capture file for alias.

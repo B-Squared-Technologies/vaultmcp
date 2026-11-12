@@ -3,7 +3,8 @@
 // PreToolUse: rewrite a tool's input before it runs.
 //   - Egress (Bash only): pre-existing [vault:ALIAS] -> $(<abs> get ALIAS), a
 //     command substitution resolved at shell-execution time. The raw secret
-//     never appears in the transcript.
+//     never appears in the transcript. In any other tool the placeholder
+//     stays as text, and naming a capture there marks that capture as used.
 //   - Ingress: detected raw secrets are vaulted and replaced — with
 //     $(<abs> get ALIAS) for Bash, or a static [vault:ALIAS] placeholder
 //     otherwise.
@@ -23,12 +24,15 @@ package hook
 
 import (
 	"encoding/json"
+	"errors"
+	"os"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/B-Squared-Technologies/vaultmcp/internal/audit"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/capture"
+	"github.com/B-Squared-Technologies/vaultmcp/internal/crypto"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/detect"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/vault"
 )
@@ -207,10 +211,12 @@ func (d Deps) sub(alias string) string {
 // known reports whether alias resolves: a named secret, or a capture file.
 // The capture check is a stat, with no decrypt and no directory listing.
 //
-// A capture that is known here is about to be read by the command the hook
-// hands back, so it is marked as in use now. Otherwise the daily prune, which
-// runs at the end of this same hook call, could delete an old never-read
-// capture before the shell gets to read it.
+// A capture that is known here is marked as in use now, whatever its age. In
+// a shell command it is about to be read, and the daily prune, which runs at
+// the end of this same hook call, could otherwise delete an old never-read
+// capture before the shell gets to it. In any other tool the placeholder is
+// most likely being written into a file, and from then on that file's
+// placeholder and this capture are all that is left of the value.
 func (d Deps) known(store vault.Store, alias string) bool {
 	if _, ok := store[alias]; ok {
 		return true
@@ -218,7 +224,7 @@ func (d Deps) known(store vault.Store, alias string) bool {
 	if !capture.Exists(d.Paths.Captured, alias) {
 		return false
 	}
-	capture.Seen(d.Paths.Captured, alias, d.Now)
+	capture.Mention(d.Paths.Captured, alias, d.Now)
 	return true
 }
 
@@ -250,32 +256,61 @@ func (d Deps) aliasFor(store vault.Store, m detect.Match, tool string) (alias st
 	if _, clash := store[alias]; clash {
 		return "", false
 	}
-	created, err := capture.Write(d.Paths.Captured, key, alias, capture.Entry{
+	e := capture.Entry{
 		Value:   m.Value,
 		Kind:    m.Type,
 		Created: d.Now.UTC().Format(time.RFC3339),
 		Tool:    tool,
 		Session: d.Session,
 		Cwd:     d.Cwd,
-	})
+	}
+	created, err := capture.Write(d.Paths.Captured, key, alias, e)
 	if err != nil {
 		return "", false
+	}
+	if !created {
+		if created, ok = d.reuse(key, alias, e); !ok {
+			return "", false
+		}
 	}
 	if created {
 		// The hook has always tightened the vault folder to owner-only when
 		// it stored something; a folder that predates the vault may be wider.
 		_ = d.Paths.EnsureDir()
 		_ = audit.Log(d.Paths.Audit, "vault", alias, tool, d.Now)
-	} else {
-		// The file was there already. Hand out its alias only if it still
-		// opens to this value: a damaged file would make a placeholder that
-		// can never be resolved.
-		if e, err := capture.Read(d.Paths.Captured, key, alias); err != nil || e.Value != m.Value {
-			return "", false
-		}
-		capture.Seen(d.Paths.Captured, alias, d.Now)
 	}
 	return alias, true
+}
+
+// reuse decides whether the capture file that is already at alias can stand
+// for e.Value. ok is false when it cannot, and the caller then emits nothing.
+// rewritten reports that the file had to be written again.
+//
+// The mark comes first and the read second, so the read is also the check
+// that the file is still there after the mark. A prune running beside this
+// hook can delete an old never-used capture up to the moment it is marked;
+// reading first would let the alias go out for a file that is already gone.
+//
+// A file that opens to another value is never touched: the alias is taken.
+// A file that is gone, or that no longer opens, is written again from the
+// value in hand. The alias is derived from the value under this same key, so
+// a file here that does not open can only be damaged (cut short by a crash,
+// or copied in from another name), and leaving it would switch redaction of
+// this value off until the file expired a month later.
+func (d Deps) reuse(key []byte, alias string, e capture.Entry) (rewritten, ok bool) {
+	capture.Seen(d.Paths.Captured, alias, d.Now)
+	got, err := capture.Read(d.Paths.Captured, key, alias)
+	if err == nil {
+		return false, got.Value == e.Value
+	}
+	if !errors.Is(err, crypto.ErrDecrypt) && !os.IsNotExist(err) {
+		return false, false
+	}
+	if err := capture.Replace(d.Paths.Captured, key, alias, e); err != nil {
+		return false, false
+	}
+	got, err = capture.Read(d.Paths.Captured, key, alias)
+	return true, err == nil && got.Value == e.Value
 }
 
 func (d Deps) preToolUse(env envelope) []byte {
@@ -300,6 +335,14 @@ func (d Deps) preToolUse(env envelope) []byte {
 			}
 			return m // unknown alias: leave untouched
 		})
+	} else {
+		// Not a shell: the placeholders stay as they are, but each known one
+		// still marks its capture as used. This runs before the ingress step
+		// on purpose, so it sees only the placeholders the tool input came
+		// with, not the ones about to be put in for new captures.
+		for _, m := range aliasRe.FindAllStringSubmatch(text, -1) {
+			d.known(store, m[1])
+		}
 	}
 
 	// Ingress: vault freshly-detected secrets and replace them.

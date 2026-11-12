@@ -87,3 +87,46 @@ func TestPlaintextNotPresentInCiphertext(t *testing.T) {
 		t.Fatal("plaintext secret found verbatim in ciphertext")
 	}
 }
+
+// A blob sealed with bound bytes opens only when the same bytes are given
+// again: not with others, and not with none.
+func TestBoundBytesMustMatchToOpen(t *testing.T) {
+	key := NewKey()
+	msg := []byte("sealed for one name")
+	blob, err := SealBound(key, msg, []byte("NAME_A"))
+	if err != nil {
+		t.Fatalf("SealBound: %v", err)
+	}
+	if got, err := OpenBound(key, blob, []byte("NAME_A")); err != nil || !bytes.Equal(got, msg) {
+		t.Fatalf("OpenBound with the same bound bytes = %q, %v", got, err)
+	}
+	for name, open := range map[string]func() ([]byte, error){
+		"other bound bytes": func() ([]byte, error) { return OpenBound(key, blob, []byte("NAME_B")) },
+		"no bound bytes":    func() ([]byte, error) { return OpenBound(key, blob, nil) },
+		"plain Open":        func() ([]byte, error) { return Open(key, blob) },
+		"truncated":         func() ([]byte, error) { return OpenBound(key, blob[:nonceSize-1], []byte("NAME_A")) },
+	} {
+		if _, err := open(); err != ErrDecrypt {
+			t.Errorf("%s: err = %v, want ErrDecrypt", name, err)
+		}
+	}
+}
+
+// store.enc and key.enc are written with Seal. Adding the bound variant must
+// not change what Seal writes: its output is exactly a seal with no bound
+// bytes, in both directions.
+func TestSealFormatUnchangedByBoundVariant(t *testing.T) {
+	key := NewKey()
+	msg := []byte("a store written before captures were bound")
+	plain, _ := Seal(key, msg)
+	if got, err := OpenBound(key, plain, nil); err != nil || !bytes.Equal(got, msg) {
+		t.Fatalf("a Seal blob is not a seal with no bound bytes: %v", err)
+	}
+	unbound, _ := SealBound(key, msg, nil)
+	if got, err := Open(key, unbound); err != nil || !bytes.Equal(got, msg) {
+		t.Fatalf("Open cannot read a seal with no bound bytes: %v", err)
+	}
+	if len(plain) != len(unbound) {
+		t.Fatalf("blob length changed: %d vs %d", len(plain), len(unbound))
+	}
+}

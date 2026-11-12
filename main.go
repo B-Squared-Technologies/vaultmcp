@@ -27,11 +27,11 @@ Usage:
   vaultmcp list [--captured]     List named secrets, or the hook's captures (values masked)
   vaultmcp delete <alias> [--yes]  Remove a secret (--yes skips the confirm)
   vaultmcp prune [--dry-run]     Delete expired captures
-  vaultmcp migrate-captures [--apply]  Move old hook captures out of store.enc (dry run without --apply)
+  vaultmcp migrate-captures [--apply] [--names]  Move old hook captures out of store.enc (dry run without --apply)
   vaultmcp status                Show vault + hook health
   vaultmcp audit [--last N]      Show the audit log
   vaultmcp unlock                Cache the key for this machine/session
-  vaultmcp lock                  Clear the cached key
+  vaultmcp lock                  Remove the key from the OS keychain (refused when that is its only copy)
   vaultmcp install [--global]    Register hooks (project .claude, or ~/.claude + Codex/Cursor with --global)
   vaultmcp export-aliases        Print alias list for CLAUDE.md
   vaultmcp hook                  (internal) run as a Claude Code hook`
@@ -294,6 +294,14 @@ func cmdUnlock(args []string) error {
 }
 
 func cmdLock(args []string) error {
+	// In keychain mode the keychain entry is not a cached copy, it is the
+	// key: `unlock` never puts a key there, only the first `set` does. With
+	// no key.enc beside it, deleting it would leave everything in the vault
+	// sealed for good.
+	p := paths()
+	if _, ok := keyring.FromKeychain(); ok && !fileExists(p.Key) && holdsSecrets(p) {
+		return fmt.Errorf("the OS keychain holds the only copy of this vault's key (there is no key.enc), and %s holds secrets sealed with it. Removing it would make them unreadable for good, so nothing was changed", p.Dir)
+	}
 	if err := keyring.DeleteFromKeychain(); err != nil {
 		return err
 	}

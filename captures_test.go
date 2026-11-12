@@ -14,7 +14,9 @@ import (
 	"github.com/B-Squared-Technologies/vaultmcp/internal/capture"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/crypto"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/hook"
+	"github.com/B-Squared-Technologies/vaultmcp/internal/keyring"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/vault"
+	zk "github.com/zalando/go-keyring"
 )
 
 const testMachine = "test-machine"
@@ -231,8 +233,10 @@ func TestResolveCaptureFromAnotherMachine(t *testing.T) {
 	alias := v.capture(t, fakeToken(1), testNow)
 	setMachineID(t, "a-different-machine", nil)
 	_, err := resolve(v.p, v.master, alias, testNow)
-	if err == nil || !strings.Contains(err.Error(), "does not open on this machine") {
-		t.Fatalf("expected a machine-lock error, got %v", err)
+	// The message must not blame this machine alone: a damaged file or another
+	// master key gives the very same failure.
+	if err == nil || !strings.Contains(err.Error(), "sealed on another machine or with another key, or its file is damaged") {
+		t.Fatalf("expected an error naming every reason a capture does not open, got %v", err)
 	}
 }
 
@@ -353,7 +357,7 @@ func TestListCaptured(t *testing.T) {
 	for alias, wants := range map[string][]string{
 		fresh:   {"github_token", " 3d ", "never used"},
 		read:    {"github_token", " 5h ", " used "},
-		foreign: {"does not open on this machine"},
+		foreign: {"does not open here: another machine, another key, or damaged"},
 	} {
 		for _, want := range wants {
 			if !strings.Contains(lines[alias], want) {
@@ -377,16 +381,35 @@ func TestListCaptured(t *testing.T) {
 
 func TestStatusCounts(t *testing.T) {
 	v := newTestVault(t)
-	v.saveStore(t, vault.Store{"MY_KEY": "x", "GITHUB_TOKEN": "y", "JWT_TOKEN_12": "z"})
+	// Two entries the hook captured, and one a person stored under a name that
+	// only looks generated. The hint counts what migrate-captures would move.
+	v.saveStore(t, vault.Store{"MY_KEY": "x", "GITHUB_TOKEN": "y", "JWT_TOKEN_12": "z", "STRIPE_KEY": "set by a person"})
+	for _, e := range [][2]string{{"vault", "GITHUB_TOKEN"}, {"vault", "JWT_TOKEN_12"}, {"set", "STRIPE_KEY"}} {
+		if err := audit.Log(v.p.Audit, e[0], e[1], "test", testNow); err != nil {
+			t.Fatal(err)
+		}
+	}
 	v.capture(t, fakeToken(1), testNow)
 
 	var out bytes.Buffer
 	writeVaultCounts(&out, v.p, v.master)
 	text := out.String()
-	for _, want := range []string{"named:   3 secret(s)", "2 have hook-generated names", "vaultmcp migrate-captures", "captures: 1", "new captures are sealed for this machine only"} {
+	for _, want := range []string{"named:   4 secret(s)", "2 were captured by the hook and are still in store.enc", "vaultmcp migrate-captures", "captures: 1", "new captures are sealed for this machine only"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("status lacks %q:\n%s", want, text)
 		}
+	}
+
+	// Doing what the hint says clears it. The person's STRIPE_KEY stays in the
+	// store, and must not keep a hint alive that no run could ever clear.
+	out.Reset()
+	if err := migrateCaptures(&out, v.p, v.master, v.capKey, true, false, testNow); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	writeVaultCounts(&out, v.p, v.master)
+	if _, ok := v.loadStore(t)["STRIPE_KEY"]; !ok || strings.Contains(out.String(), "migrate-captures") {
+		t.Errorf("migration hint still shown after the migration ran (STRIPE_KEY kept: %v):\n%s", ok, out.String())
 	}
 
 	// No machine id: status must say so plainly.
@@ -400,16 +423,8 @@ func TestStatusCounts(t *testing.T) {
 	// Locked vault: no named count, but captures are still counted.
 	out.Reset()
 	writeVaultCounts(&out, v.p, nil)
-	if strings.Contains(out.String(), "named:") || !strings.Contains(out.String(), "captures: 1") {
+	if strings.Contains(out.String(), "named:") || !strings.Contains(out.String(), "captures: 3") {
 		t.Errorf("locked status wrong:\n%s", out.String())
-	}
-
-	// Nothing hook-named left: no migration hint.
-	v.saveStore(t, vault.Store{"MY_KEY": "x"})
-	out.Reset()
-	writeVaultCounts(&out, v.p, v.master)
-	if strings.Contains(out.String(), "migrate-captures") {
-		t.Errorf("migration hint shown with nothing to migrate:\n%s", out.String())
 	}
 }
 
@@ -496,7 +511,7 @@ func TestMigrateDryRunChangesNothing(t *testing.T) {
 	auditBefore := mustRead(t, v.p.Audit)
 
 	var out bytes.Buffer
-	if err := migrateCaptures(&out, v.p, v.master, v.capKey, false, testNow); err != nil {
+	if err := migrateCaptures(&out, v.p, v.master, v.capKey, false, false, testNow); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(before, mustRead(t, v.p.Store)) || !bytes.Equal(auditBefore, mustRead(t, v.p.Audit)) {
@@ -514,7 +529,9 @@ func TestMigrateDryRunChangesNothing(t *testing.T) {
 			t.Errorf("dry-run report lacks %q:\n%s", want, text)
 		}
 	}
-	// Names that look generated but stay are listed one per line, and only those.
+	// Names that look generated but stay are listed bare, one per line, and
+	// only those. A name that moves is listed with whether it was read: see
+	// TestMigrateNamesWhatMoves.
 	listed := map[string]bool{}
 	for _, line := range strings.Split(text, "\n") {
 		listed[strings.TrimSpace(line)] = true
@@ -534,7 +551,7 @@ func TestMigrateApply(t *testing.T) {
 	before := mustRead(t, v.p.Store)
 
 	var out bytes.Buffer
-	if err := migrateCaptures(&out, v.p, v.master, v.capKey, true, testNow); err != nil {
+	if err := migrateCaptures(&out, v.p, v.master, v.capKey, true, false, testNow); err != nil {
 		t.Fatalf("apply: %v\n%s", err, out.String())
 	}
 
@@ -602,14 +619,14 @@ func TestMigrateApply(t *testing.T) {
 func TestMigrateSecondApplyIsNoOp(t *testing.T) {
 	v, _ := migrationVault(t)
 	var out bytes.Buffer
-	if err := migrateCaptures(&out, v.p, v.master, v.capKey, true, testNow); err != nil {
+	if err := migrateCaptures(&out, v.p, v.master, v.capKey, true, false, testNow); err != nil {
 		t.Fatal(err)
 	}
 	store := mustRead(t, v.p.Store)
 	captured := mustRead(t, filepath.Join(v.p.Captured, "JWT_TOKEN.enc"))
 
 	out.Reset()
-	if err := migrateCaptures(&out, v.p, v.master, v.capKey, true, testNow.Add(time.Hour)); err != nil {
+	if err := migrateCaptures(&out, v.p, v.master, v.capKey, true, false, testNow.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(store, mustRead(t, v.p.Store)) {
@@ -635,7 +652,7 @@ func TestMigrateFinishesAPartialRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := migrateCaptures(&out, v.p, v.master, v.capKey, true, testNow); err != nil {
+	if err := migrateCaptures(&out, v.p, v.master, v.capKey, true, false, testNow); err != nil {
 		t.Fatalf("apply after a partial run: %v", err)
 	}
 	store := v.loadStore(t)
@@ -676,7 +693,7 @@ func TestMigrateFailureLeavesStoreUntouched(t *testing.T) {
 			before := mustRead(t, v.p.Store)
 			breakIt(t, v)
 			var out bytes.Buffer
-			err := migrateCaptures(&out, v.p, v.master, v.capKey, true, testNow)
+			err := migrateCaptures(&out, v.p, v.master, v.capKey, true, false, testNow)
 			if err == nil || !strings.Contains(err.Error(), "store.enc was not changed") {
 				t.Fatalf("expected a failure that says the store is untouched, got %v", err)
 			}
@@ -824,7 +841,7 @@ func TestMigrateLeavesOneAuditLine(t *testing.T) {
 	}
 	for run, want := range []int{1, 1} { // the second apply moves nothing and logs nothing
 		var out bytes.Buffer
-		if err := migrateCaptures(&out, v.p, v.master, v.capKey, true, testNow.Add(time.Duration(run)*time.Minute)); err != nil {
+		if err := migrateCaptures(&out, v.p, v.master, v.capKey, true, false, testNow.Add(time.Duration(run)*time.Minute)); err != nil {
 			t.Fatal(err)
 		}
 		if got := count(); got != want {
@@ -854,6 +871,458 @@ func TestMigrateKeepsChangesMadeMeanwhile(t *testing.T) {
 	for alias, val := range want {
 		if got[alias] != val {
 			t.Fatalf("[%s] was lost or changed by the final save", alias)
+		}
+	}
+}
+
+// --- a capture belongs to its alias ---
+
+// A capture file copied over another capture, or to a name the hook never
+// gave out, must not resolve there.
+func TestResolveRejectsACaptureCopiedToAnotherName(t *testing.T) {
+	v := newTestVault(t)
+	a := v.capture(t, fakeToken(1), testNow)
+	b := v.capture(t, fakeToken(2), testNow)
+	blob := mustRead(t, filepath.Join(v.p.Captured, a+".enc"))
+	for _, name := range []string{b, "DEPLOY_KEY"} {
+		if err := os.WriteFile(filepath.Join(v.p.Captured, name+".enc"), blob, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := resolve(v.p, v.master, name, testNow)
+		if err == nil || !strings.Contains(err.Error(), "does not open here") {
+			t.Fatalf("a capture copied to %s resolved there (to the copied value: %v, err: %v)", name, got == fakeToken(1), err)
+		}
+	}
+	if got, err := resolve(v.p, v.master, a, testNow); err != nil || got != fakeToken(1) {
+		t.Fatalf("the capture no longer resolves under its own alias: %v", err)
+	}
+}
+
+// --- the master key ---
+
+// useMockKeychain swaps the OS keychain for an in-memory one and clears
+// VAULTMCP_KEY. The tests below store and delete master keys through the real
+// commands; each calls this first, so none of that can reach a real keychain.
+func useMockKeychain(t *testing.T) {
+	t.Helper()
+	zk.MockInit()
+	t.Setenv("VAULTMCP_KEY", "")
+}
+
+// The first `set` on an empty vault still makes the key, in either mode.
+func TestFirstSetOnAnEmptyVaultMakesTheKey(t *testing.T) {
+	useMockKeychain(t)
+	v := newTestVault(t)
+	if err := cmdSet([]string{"MINE", "value-one"}); err != nil {
+		t.Fatalf("first set in keychain mode: %v", err)
+	}
+	key, ok := keyring.FromKeychain()
+	if !ok || fileExists(v.p.Key) {
+		t.Fatalf("keychain mode: key in keychain = %v, key.enc written = %v", ok, fileExists(v.p.Key))
+	}
+	if got, err := resolve(v.p, key, "MINE", testNow); err != nil || got != "value-one" {
+		t.Fatalf("the new key does not open what was just stored: %v", err)
+	}
+
+	useMockKeychain(t)
+	v = newTestVault(t)
+	t.Setenv("VAULTMCP_KEY", "a passphrase for a new vault")
+	if err := cmdSet([]string{"MINE", "value-one"}); err != nil {
+		t.Fatalf("first set in passphrase mode: %v", err)
+	}
+	if _, ok := keyring.FromKeychain(); ok || !fileExists(v.p.Key) {
+		t.Fatalf("passphrase mode: key in keychain = %v, key.enc written = %v", ok, fileExists(v.p.Key))
+	}
+}
+
+// A vault that already holds secrets has a key somewhere. If that key cannot
+// be found, `set` must not make a new one: it would open nothing that is
+// there, and from then on it is the key every command finds first.
+func TestNoNewKeyOverAVaultThatHoldsSecrets(t *testing.T) {
+	holds := map[string]func(t *testing.T, v testVault){
+		"store.enc":           func(t *testing.T, v testVault) { v.saveStore(t, vault.Store{"MINE": "x"}) },
+		"a capture file only": func(t *testing.T, v testVault) { v.capture(t, fakeToken(1), testNow) },
+	}
+	for what, fill := range holds {
+		for _, mode := range []string{"keychain", "VAULTMCP_KEY"} {
+			t.Run(what+", "+mode, func(t *testing.T) {
+				useMockKeychain(t)
+				v := newTestVault(t)
+				fill(t, v) // sealed with a key that is now nowhere to be found
+				if mode == "VAULTMCP_KEY" {
+					t.Setenv("VAULTMCP_KEY", "a passphrase set later")
+				}
+				err := cmdSet([]string{"OTHER", "value-two"})
+				if err == nil || !strings.Contains(err.Error(), "none was created and nothing was changed") {
+					t.Fatalf("set over a vault that holds secrets: err = %v, want a refusal to make a new key", err)
+				}
+				if _, ok := keyring.FromKeychain(); ok {
+					t.Fatal("a new master key was stored in the keychain")
+				}
+				if fileExists(v.p.Key) {
+					t.Fatal("a new key.enc was written")
+				}
+			})
+		}
+	}
+}
+
+// A vault whose key is in the keychain, and then VAULTMCP_KEY is set for the
+// first time. `set` used to write a second key into key.enc, which the hook
+// then preferred: it could no longer read the store and redacted nothing.
+func TestEnvPassphraseDoesNotReplaceAKeychainKey(t *testing.T) {
+	useMockKeychain(t)
+	v := newTestVault(t)
+	if err := cmdSet([]string{"MINE", "value-one"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VAULTMCP_KEY", "a passphrase chosen later")
+	err := cmdSet([]string{"OTHER", "value-two"})
+	if err == nil || !strings.Contains(err.Error(), "unset VAULTMCP_KEY") {
+		t.Fatalf("err = %v, want a refusal that says how to get back to the keychain key", err)
+	}
+	if fileExists(v.p.Key) {
+		t.Fatal("a second key was written to key.enc")
+	}
+	// The hook still finds the one real key, with the variable set or not.
+	for _, env := range []string{"a passphrase chosen later", ""} {
+		t.Setenv("VAULTMCP_KEY", env)
+		key, err := masterKeyNonInteractive(v.p)
+		if err != nil {
+			t.Fatalf("VAULTMCP_KEY=%q: the key is no longer found: %v", env, err)
+		}
+		if got, err := resolve(v.p, key, "MINE", testNow); err != nil || got != "value-one" {
+			t.Fatalf("VAULTMCP_KEY=%q: the stored secret no longer opens: %v", env, err)
+		}
+	}
+}
+
+// In keychain mode the keychain entry is the key itself, not a cached copy.
+// `lock` must not delete it while the vault holds secrets and no key.enc
+// exists: nothing could ever open them again.
+func TestLockKeepsTheOnlyCopyOfTheKey(t *testing.T) {
+	useMockKeychain(t)
+	v := newTestVault(t)
+	if err := cmdSet([]string{"MINE", "value-one"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdLock(nil); err == nil || !strings.Contains(err.Error(), "only copy") {
+		t.Fatalf("lock err = %v, want a refusal", err)
+	}
+	key, ok := keyring.FromKeychain()
+	if !ok {
+		t.Fatal("lock deleted the only copy of the master key")
+	}
+	if got, err := resolve(v.p, key, "MINE", testNow); err != nil || got != "value-one" {
+		t.Fatalf("the stored secret no longer opens after a refused lock: %v", err)
+	}
+
+	// With the key in key.enc as well, the keychain entry is a spare copy and
+	// lock clears it as before.
+	if err := keyring.WrapToFile(v.p.Key, key, "a passphrase"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdLock(nil); err != nil {
+		t.Fatalf("lock with key.enc present: %v", err)
+	}
+	if _, ok := keyring.FromKeychain(); ok {
+		t.Fatal("lock did not clear the keychain copy")
+	}
+
+	// An empty vault has nothing a lost key could strand.
+	useMockKeychain(t)
+	newTestVault(t)
+	if err := keyring.ToKeychain(crypto.NewKey()); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdLock(nil); err != nil {
+		t.Fatalf("lock on an empty vault: %v", err)
+	}
+	if _, ok := keyring.FromKeychain(); ok {
+		t.Fatal("lock on an empty vault did not clear the keychain")
+	}
+}
+
+// --- prune and migrate-captures arguments ---
+
+// A mistyped flag must stop the command. `prune --dryrun` used to run as a
+// real prune.
+func TestPruneAndMigrateRefuseUnknownArguments(t *testing.T) {
+	v := newPassphraseVault(t)
+	expired := v.capture(t, fakeToken(1), time.Now().Add(-10*24*time.Hour))
+	v.saveStore(t, vault.Store{"GITHUB_TOKEN_2": fakeToken(2)})
+	if err := audit.Log(v.p.Audit, "vault", "GITHUB_TOKEN_2", "Bash", testNow); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{{"--dryrun"}, {"-n"}, {"--dry-run", "now"}} {
+		if err := cmdPrune(args); err == nil || !strings.Contains(err.Error(), "unknown argument") {
+			t.Fatalf("prune %v: err = %v, want a refusal", args, err)
+		}
+	}
+	if !capture.Exists(v.p.Captured, expired) {
+		t.Fatal("a prune with a mistyped flag deleted a capture")
+	}
+	for _, args := range [][]string{{"--aply"}, {"apply"}, {"--apply", "--force"}} {
+		if err := cmdMigrateCaptures(args); err == nil || !strings.Contains(err.Error(), "unknown argument") {
+			t.Fatalf("migrate-captures %v: err = %v, want a refusal", args, err)
+		}
+	}
+	if _, ok := v.loadStore(t)["GITHUB_TOKEN_2"]; !ok || len(backups(t, v)) != 0 {
+		t.Fatal("migrate-captures with a mistyped flag changed the vault")
+	}
+
+	// The real flag still does what it says.
+	if err := cmdPrune([]string{"--dry-run"}); err != nil || !capture.Exists(v.p.Captured, expired) {
+		t.Fatalf("prune --dry-run: err = %v, capture still there = %v", err, capture.Exists(v.p.Captured, expired))
+	}
+}
+
+// --- what the migration reports ---
+
+// Every secret that moves is named, on the dry run and on --apply, with
+// whether it was ever read. A moved secret expires, so the dry run is where a
+// name that should have stayed gets noticed.
+func TestMigrateNamesWhatMoves(t *testing.T) {
+	for _, apply := range []bool{false, true} {
+		v, _ := migrationVault(t)
+		var out bytes.Buffer
+		if err := migrateCaptures(&out, v.p, v.master, v.capKey, apply, false, testNow); err != nil {
+			t.Fatal(err)
+		}
+		// A line that is a name followed by a mark is one that moves.
+		moves := map[string]string{}
+		for _, line := range strings.Split(out.String(), "\n") {
+			if f := strings.Fields(line); len(f) > 1 {
+				moves[f[0]] = strings.Join(f[1:], " ")
+			}
+		}
+		for alias, want := range map[string]string{
+			"GITHUB_TOKEN_2": "read", "JWT_TOKEN": "never read",
+			"GITHUB_TOKEN": "", "STRIPE_KEY_3": "", "OPENAI_KEY": "", "MY_API_KEY": "",
+		} {
+			if moves[alias] != want {
+				t.Errorf("apply=%v: %s listed as moving with %q, want %q:\n%s", apply, alias, moves[alias], want, out.String())
+			}
+		}
+	}
+}
+
+// What moves is decided from the audit log alone. A line that cannot be read
+// may be a `set` line, and the report has to warn. A chain that does not
+// verify while every line reads is common (hooks write side by side), so it
+// gets a note. A whole log gets neither.
+func TestMigrateWarnsWhenAuditLogIsNotWhole(t *testing.T) {
+	cases := []struct {
+		name   string
+		damage func(t *testing.T, path string)
+		want   []string // empty: no warning
+	}{
+		{name: "a whole log", damage: func(*testing.T, string) {}},
+		{name: "a half-written line", want: []string{"WARNING: 1 line(s) of the audit log could not be read", "Check every name on the list above"},
+			damage: func(t *testing.T, path string) {
+				f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, _ = f.WriteString(`{"ts":"2026-03-01T12:00:00Z","action":"set","alias":"GITHUB_TOK` + "\n")
+				_ = f.Close()
+			}},
+		{name: "a line removed", want: []string{"note: the audit log's hash chain does not verify", "Check every name on the list above"},
+			damage: func(t *testing.T, path string) {
+				_, rest, _ := strings.Cut(string(mustRead(t, path)), "\n")
+				if err := os.WriteFile(path, []byte(rest), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}},
+	}
+	for _, c := range cases {
+		for _, apply := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, apply=%v", c.name, apply), func(t *testing.T) {
+				v := newTestVault(t)
+				v.saveStore(t, vault.Store{"GITHUB_TOKEN": fakeToken(1), "MINE": "x"})
+				for _, e := range [][2]string{{"set", "MINE"}, {"vault", "GITHUB_TOKEN"}, {"get", "MINE"}} {
+					if err := audit.Log(v.p.Audit, e[0], e[1], "test", testNow); err != nil {
+						t.Fatal(err)
+					}
+				}
+				c.damage(t, v.p.Audit)
+				var out bytes.Buffer
+				if err := migrateCaptures(&out, v.p, v.master, v.capKey, apply, false, testNow); err != nil {
+					t.Fatal(err)
+				}
+				if len(c.want) == 0 && (strings.Contains(out.String(), "WARNING") || strings.Contains(out.String(), "note:")) {
+					t.Fatalf("a warning for a log that is whole:\n%s", out.String())
+				}
+				for _, want := range c.want {
+					if !strings.Contains(out.String(), want) {
+						t.Errorf("report lacks %q:\n%s", want, out.String())
+					}
+				}
+			})
+		}
+	}
+}
+
+// A capture file left by a run that did not finish holds that run's date and
+// that run's view of whether the secret was read. The run that finishes the
+// job writes it again, so a rerun a week later does not hand the next prune a
+// capture that already looks a week old and never used.
+func TestMigrateRerunRedatesALeftoverCapture(t *testing.T) {
+	v, original := migrationVault(t)
+	for alias, kind := range map[string]string{"JWT_TOKEN": "jwt_token", "GITHUB_TOKEN_2": "github_token"} {
+		e := capture.Entry{Value: original[alias], Kind: kind, Created: testNow.Format(time.RFC3339)}
+		if _, err := capture.Write(v.p.Captured, v.capKey, alias, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rerun := testNow.Add(8 * 24 * time.Hour)
+	var out bytes.Buffer
+	if err := migrateCaptures(&out, v.p, v.master, v.capKey, true, false, rerun); err != nil {
+		t.Fatalf("rerun: %v", err)
+	}
+	for alias, wantUsed := range map[string]bool{"JWT_TOKEN": false, "GITHUB_TOKEN_2": true} {
+		e, err := capture.Read(v.p.Captured, v.capKey, alias)
+		if err != nil || e.Value != original[alias] {
+			t.Fatalf("%s does not open to its value after the rerun: %v", alias, err)
+		}
+		if e.Created != rerun.Format(time.RFC3339) || e.Used != wantUsed {
+			t.Errorf("%s still carries the unfinished run: created %q, used %v; want %q, %v", alias, e.Created, e.Used, rerun.Format(time.RFC3339), wantUsed)
+		}
+	}
+	// The daily prune of the next hook call, a minute after --apply.
+	if _, err := capture.Prune(v.p.Captured, v.capKey, rerun.Add(time.Minute), 0, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, alias := range []string{"JWT_TOKEN", "GITHUB_TOKEN_2"} {
+		if _, err := resolve(v.p, v.master, alias, rerun.Add(2*time.Minute)); err != nil {
+			t.Errorf("%s was pruned a minute after the migration reported success: %v", alias, err)
+		}
+	}
+}
+
+// --- prune and the audit log ---
+
+// A prune that deletes something leaves one audit line with its counts,
+// whether a person ran it or the hook did. A dry run and a prune that found
+// nothing leave none.
+func TestPruneLeavesOneAuditLine(t *testing.T) {
+	v := newPassphraseVault(t)
+	lines := func() []audit.Entry {
+		t.Helper()
+		log, err := audit.Read(v.p.Audit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []audit.Entry
+		for _, e := range log {
+			if e.Action == "prune" {
+				out = append(out, e)
+			}
+		}
+		return out
+	}
+	old := time.Now().Add(-10 * 24 * time.Hour)
+	v.capture(t, fakeToken(1), old)
+	v.capture(t, fakeToken(2), old)
+
+	if err := cmdPrune([]string{"--dry-run"}); err != nil || len(lines()) != 0 {
+		t.Fatalf("after a dry run: err = %v, %d prune lines, want none", err, len(lines()))
+	}
+	if err := cmdPrune(nil); err != nil {
+		t.Fatal(err)
+	}
+	got := lines()
+	if len(got) != 1 || got[0].Alias != "CAPTURES" || !strings.Contains(got[0].Context, "cli: deleted 2 never used") {
+		t.Fatalf("after a prune that deleted two captures: %+v", got)
+	}
+	if err := cmdPrune(nil); err != nil || len(lines()) != 1 {
+		t.Fatalf("after a prune with nothing to delete: err = %v, %d prune lines, want still 1", err, len(lines()))
+	}
+
+	// The hook's own daily prune, on a call that has nothing to redact.
+	v.capture(t, fakeToken(3), old)
+	var out bytes.Buffer
+	runHook([]byte(`{"hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"/x"}}`), &out, v.p, time.Now())
+	got = lines()
+	if len(got) != 2 || !strings.Contains(got[1].Context, "hook: deleted 1 never used") {
+		t.Fatalf("after the hook's daily prune: %+v", got)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("the hook wrote output for a call with nothing to redact: %s", out.String())
+	}
+	if ok, err := audit.Verify(v.p.Audit); err != nil || !ok {
+		t.Fatalf("the audit chain does not verify after the prune lines (err=%v)", err)
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// The hook writes its answer first and prunes second, so a slow prune can
+// never hold up a tool call.
+func TestHookAnswersBeforeItPrunes(t *testing.T) {
+	v := newPassphraseVault(t)
+	expired := v.capture(t, fakeToken(8), testNow.Add(-10*24*time.Hour))
+	answered, thereAtAnswer := false, false
+	out := writerFunc(func(p []byte) (int, error) {
+		answered, thereAtAnswer = true, capture.Exists(v.p.Captured, expired)
+		return len(p), nil
+	})
+	runHook(hookInput(fakeToken(1)), out, v.p, testNow)
+	if !answered {
+		t.Fatal("the hook wrote no answer")
+	}
+	if !thereAtAnswer {
+		t.Fatal("the hook pruned before it wrote its answer")
+	}
+	if capture.Exists(v.p.Captured, expired) {
+		t.Fatal("the hook's daily prune did not run after the answer")
+	}
+}
+
+// A vault that ran the old hook for months has thousands of entries to move.
+// Past a screenful the migration counts them by kind; --names lists them all.
+func TestMigrateSummarisesALongListOfNames(t *testing.T) {
+	v := newTestVault(t)
+	store := vault.Store{}
+	for i := 2; i < 2+namesShown+1; i++ {
+		alias := fmt.Sprintf("GITHUB_TOKEN_%d", i)
+		store[alias] = fakeToken(i)
+		if err := audit.Log(v.p.Audit, "vault", alias, "test", testNow.Add(-time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	v.saveStore(t, store)
+
+	var short, full bytes.Buffer
+	if err := migrateCaptures(&short, v.p, v.master, v.capKey, false, false, testNow); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(short.String(), "GITHUB_TOKEN_7 ") || !strings.Contains(short.String(), "GITHUB_TOKEN[_N]") || !strings.Contains(short.String(), "--names") {
+		t.Fatalf("a long list must be counted by kind and point at --names:\n%s", short.String())
+	}
+	if err := migrateCaptures(&full, v.p, v.master, v.capKey, false, true, testNow); err != nil {
+		t.Fatal(err)
+	}
+	// With the names hidden, a warning about the log must say how to see them.
+	f, err := os.OpenFile(v.p.Audit, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString("{not json\n")
+	_ = f.Close()
+	var warned bytes.Buffer
+	if err := migrateCaptures(&warned, v.p, v.master, v.capKey, false, false, testNow); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(warned.String(), "WARNING") || !strings.Contains(warned.String(), "Run it again with --names") {
+		t.Fatalf("a warning over a summarised list must point at --names:\n%s", warned.String())
+	}
+	for _, alias := range []string{"GITHUB_TOKEN_2 ", "GITHUB_TOKEN_7 ", fmt.Sprintf("GITHUB_TOKEN_%d ", namesShown+2)} {
+		if !strings.Contains(full.String(), alias) {
+			t.Fatalf("--names must list %q:\n%s", alias, full.String())
 		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/B-Squared-Technologies/vaultmcp/internal/audit"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/capture"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/crypto"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/hook"
@@ -54,9 +55,21 @@ func runHook(stdin []byte, stdout io.Writer, p vault.Paths, now time.Time) {
 		_, _ = stdout.Write(out)
 	}
 	// Expire old captures, at most once a day. Only now, with the answer
-	// already written: AutoPrune returns nothing, so it cannot change the
-	// output or the exit code.
-	capture.AutoPrune(p.Captured, capKey, now)
+	// already written: what AutoPrune returns goes to the audit log and
+	// nowhere else, so it cannot change the output or the exit code.
+	auditPrune(p, capture.AutoPrune(p.Captured, capKey, now), "hook", now)
+}
+
+// auditPrune leaves one audit line for a prune that deleted something. Expiry
+// removes secrets, so the log has to show when it happened and how many went.
+// It is one line for the whole pass, with counts and no aliases, and a pass
+// that deleted nothing leaves no line.
+func auditPrune(p vault.Paths, r capture.PruneResult, who string, now time.Time) {
+	if r.Deleted() == 0 {
+		return
+	}
+	counts := fmt.Sprintf("%s: deleted %d never used, %d unused 30 days, %d not readable, %d temp", who, r.Unused, r.Stale, r.Orphaned, r.Temps)
+	_ = audit.Log(p.Audit, "prune", "CAPTURES", counts, now)
 }
 
 // resolve returns the value for alias: a named secret first, then a capture.
@@ -83,7 +96,7 @@ func resolve(p vault.Paths, master []byte, alias string, now time.Time) (string,
 	case os.IsNotExist(err), errors.Is(err, capture.ErrInvalidAlias):
 		return "", fmt.Errorf("no secret for alias [%s]", alias)
 	case errors.Is(err, crypto.ErrDecrypt):
-		return "", fmt.Errorf("capture [%s] does not open on this machine (captures are locked to the machine that made them)", alias)
+		return "", fmt.Errorf("capture [%s] does not open here: it was sealed on another machine or with another key, or its file is damaged", alias)
 	default:
 		return "", fmt.Errorf("capture [%s] could not be read: %w", alias, err)
 	}
@@ -134,7 +147,7 @@ func listCaptured(w io.Writer, p vault.Paths, master []byte, now time.Time) erro
 	fmt.Fprintf(w, "\n  Captured by the hook — %d secret(s)\n\n", len(items))
 	for _, it := range items {
 		if !it.Readable {
-			fmt.Fprintf(w, "  %-44s (does not open on this machine)\n", it.Alias)
+			fmt.Fprintf(w, "  %-44s (does not open here: another machine, another key, or damaged)\n", it.Alias)
 			continue
 		}
 		fmt.Fprintf(w, "  %-44s %-22s %-5s %-11s %s\n", it.Alias, it.Entry.Kind, age(it.Entry.Created, now), tern(it.Used, "used", "never used"), mask(it.Entry.Value))
@@ -163,9 +176,12 @@ func age(created string, now time.Time) string {
 func cmdPrune(args []string) error {
 	dryRun := false
 	for _, a := range args {
-		if a == "--dry-run" {
-			dryRun = true
+		// Anything but the one known flag stops here, before a file is looked
+		// at: a mistyped --dry-run must not run as a real prune.
+		if a != "--dry-run" {
+			return fmt.Errorf("unknown argument %q — usage: vaultmcp prune [--dry-run]", a)
 		}
+		dryRun = true
 	}
 	p := paths()
 	key, err := masterKeyInteractive(p, false)
@@ -173,8 +189,12 @@ func cmdPrune(args []string) error {
 		return fmt.Errorf("vault is locked — run 'vaultmcp unlock'")
 	}
 	capKey, _ := captureKey(key)
-	r, err := capture.Prune(p.Captured, capKey, time.Now(), 0, dryRun)
+	now := time.Now()
+	r, err := capture.Prune(p.Captured, capKey, now, 0, dryRun)
 	writePruneResult(os.Stdout, r, dryRun)
+	if !dryRun {
+		auditPrune(p, r, "cli", now)
+	}
 	return err
 }
 
@@ -185,7 +205,8 @@ func writePruneResult(w io.Writer, r capture.PruneResult, dryRun bool) {
 	fmt.Fprintf(w, "  never used:          %d %s\n", r.Unused, deleted)
 	fmt.Fprintf(w, "  unused for 30 days:  %d %s\n", r.Stale, deleted)
 	fmt.Fprintf(w, "  used in last 30d:    %d kept\n", r.Kept)
-	fmt.Fprintf(w, "  not readable here:   %d left alone, %d untouched for 30 days %s\n\n", r.Unreadable, r.Orphaned, deleted)
+	fmt.Fprintf(w, "  not readable here:   %d left alone, %d untouched for 30 days %s\n", r.Unreadable, r.Orphaned, deleted)
+	fmt.Fprintf(w, "  leftover temp files: %d %s\n\n", r.Temps, deleted)
 }
 
 // writeVaultCounts reports what the vault holds. master is nil while the
@@ -195,8 +216,13 @@ func writeVaultCounts(w io.Writer, p vault.Paths, master []byte) {
 	if master != nil {
 		if store, err := vault.Load(p.Store, master); err == nil {
 			fmt.Fprintf(w, "  named:   %d secret(s)\n", len(store))
-			if n := len(autoNamed(store)); n > 0 {
-				fmt.Fprintf(w, "           %d have hook-generated names — run 'vaultmcp migrate-captures'\n", n)
+			// Only what the migration would really move is counted. A name
+			// that merely looks generated (a person's own STRIPE_KEY) stays
+			// where it is, and counting it would leave a hint here that no
+			// run of the command could ever clear.
+			log, _ := audit.Read(p.Audit)
+			if n := len(planMigration(store, log).move); n > 0 {
+				fmt.Fprintf(w, "           %d were captured by the hook and are still in store.enc — run 'vaultmcp migrate-captures'\n", n)
 			}
 		}
 	}

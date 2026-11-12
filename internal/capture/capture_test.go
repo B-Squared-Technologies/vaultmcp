@@ -454,3 +454,185 @@ func TestListTriesEachKey(t *testing.T) {
 		t.Fatalf("with both keys: %+v, %v", items, err)
 	}
 }
+
+func mtimeOf(t *testing.T, dir, alias string) time.Time {
+	t.Helper()
+	fi, err := os.Stat(filepath.Join(dir, alias+ext))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fi.ModTime()
+}
+
+// isUsed reports whether the capture counts as used, the way a prune sees it.
+func isUsed(t *testing.T, dir string, key []byte, alias string) bool {
+	t.Helper()
+	e, err := Read(dir, key, alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return used(e, mtimeOf(t, dir, alias))
+}
+
+// A capture file opens under its own alias only. Copied over another capture,
+// or to a name nobody was ever given, it must not open: otherwise anyone who
+// can write to the folder could make an alias resolve to a secret of their
+// choosing.
+func TestCaptureIsBoundToItsAlias(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "captured")
+	key := testKey("m")
+	a := put(t, dir, key, "value-a", t0)
+	b := put(t, dir, key, "value-b", t0)
+	blob, err := os.ReadFile(filepath.Join(dir, a+ext))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{b, "DEPLOY_KEY"} {
+		if err := os.WriteFile(filepath.Join(dir, name+ext), blob, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := Read(dir, key, name); !errors.Is(err, crypto.ErrDecrypt) {
+			t.Fatalf("the file of %s, copied to %s, opened there (as value-a: %v, err: %v)", a, name, got.Value == "value-a", err)
+		}
+	}
+	if got, err := Read(dir, key, a); err != nil || got.Value != "value-a" {
+		t.Fatalf("the capture no longer opens under its own alias: %v", err)
+	}
+}
+
+// Replace puts a new file in place of the old one, whatever state the old one
+// was in, and leaves no temp file.
+func TestReplaceSwapsTheFile(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "captured")
+	key := testKey("m")
+	alias := put(t, dir, key, "v", t0)
+	markUsed(t, dir, key, alias, t0.Add(time.Hour))
+
+	next := entry("v", t0.Add(day))
+	if err := Replace(dir, key, alias, next); err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+	if got, err := Read(dir, key, alias); err != nil || got != next {
+		t.Fatalf("after Replace: %+v, %v; want %+v", got, err, next)
+	}
+	if !mtimeOf(t, dir, alias).Equal(t0.Add(day)) || isUsed(t, dir, key, alias) {
+		t.Fatal("a replaced capture must start again as never used, dated by its new entry")
+	}
+
+	// Over a file that does not open at all.
+	if err := os.WriteFile(filepath.Join(dir, alias+ext), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Replace(dir, key, alias, next); err != nil {
+		t.Fatalf("Replace over an empty file: %v", err)
+	}
+	if got, err := Read(dir, key, alias); err != nil || got != next {
+		t.Fatalf("after Replace over an empty file: %+v, %v", got, err)
+	}
+	if n := fileCount(t, dir); n != 1 {
+		t.Fatalf("%d files in the folder, want the one capture and no temp file", n)
+	}
+	if err := Replace(dir, key, "../ESCAPED", next); !errors.Is(err, ErrInvalidAlias) {
+		t.Fatalf("Replace with a path-like alias: err = %v, want ErrInvalidAlias", err)
+	}
+}
+
+// A placeholder met in a tool input marks its capture used at once: in the
+// very second it was captured, and long before the hour Seen waits.
+func TestMentionMarksUsedAtOnce(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "captured")
+	key := testKey("m")
+	for name, delay := range map[string]time.Duration{
+		"mentioned in the second it was captured": 0,
+		"mentioned ten minutes later":             10 * time.Minute,
+	} {
+		alias := put(t, dir, key, name, t0)
+		Mention(dir, alias, t0.Add(delay))
+		if !isUsed(t, dir, key, alias) {
+			t.Fatalf("%s: capture not marked used", name)
+		}
+		// Eight days on, a never-used capture would be gone.
+		if _, err := Prune(dir, key, t0.Add(8*day), 0, false); err != nil {
+			t.Fatal(err)
+		}
+		if !Exists(dir, alias) {
+			t.Fatalf("%s: capture pruned as never used", name)
+		}
+
+		// Mentioned again and again in one moment, the mark stays put.
+		marked := mtimeOf(t, dir, alias)
+		for i := 0; i < 3; i++ {
+			Mention(dir, alias, t0.Add(delay))
+		}
+		if got := mtimeOf(t, dir, alias); !got.Equal(marked) {
+			t.Fatalf("%s: repeated mentions moved the mark from %v to %v", name, marked, got)
+		}
+	}
+	Mention(dir, "../escape", t0) // an invalid alias is ignored, not a panic
+}
+
+// A use recorded while the clock is behind must not pull the last use back.
+// Here the capture was really used on day 39; a read with the clock a year
+// behind must not make it look a month stale on day 40.
+func TestUseNeverMovesTheMarkBack(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "captured")
+	key := testKey("m")
+	alias := put(t, dir, key, "v", t0)
+	lastUse, wrongClock := t0.Add(39*day), t0.Add(-365*day)
+	markUsed(t, dir, key, alias, lastUse)
+
+	markUsed(t, dir, key, alias, wrongClock)
+	if got := mtimeOf(t, dir, alias); !got.Equal(lastUse) {
+		t.Fatalf("a read with the clock behind moved the last use from %v to %v", lastUse, got)
+	}
+	Seen(dir, alias, wrongClock)
+	Mention(dir, alias, wrongClock)
+	if got := mtimeOf(t, dir, alias); !got.Equal(lastUse) {
+		t.Fatalf("Seen or Mention with the clock behind moved the last use to %v", got)
+	}
+	if _, err := Prune(dir, key, t0.Add(40*day), 0, false); err != nil {
+		t.Fatal(err)
+	}
+	if !Exists(dir, alias) {
+		t.Fatal("a capture used the day before was deleted as unused for 30 days")
+	}
+
+	// A capture nobody read yet still becomes used by such a read.
+	fresh := put(t, dir, key, "fresh", t0)
+	markUsed(t, dir, key, fresh, wrongClock)
+	if !isUsed(t, dir, key, fresh) {
+		t.Fatal("a first read with the clock behind did not mark the capture used")
+	}
+}
+
+// Some volumes keep only even seconds. A use right after a capture made on an
+// odd second must still count once the volume has rounded its mtime down.
+// Simulated here by rounding the way such a volume stores it.
+func TestUseCountsOnTwoSecondTimestamps(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "captured")
+	key := testKey("m")
+	created := t0.Add(time.Second) // an odd second
+	round := func(alias string) {
+		t.Helper()
+		stored := mtimeOf(t, dir, alias).Truncate(2 * time.Second)
+		if err := os.Chtimes(filepath.Join(dir, alias+ext), stored, stored); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	read := put(t, dir, key, "read at once", created)
+	round(read)
+	markUsed(t, dir, key, read, created)
+	round(read)
+	if !isUsed(t, dir, key, read) {
+		t.Fatal("a capture read in its first second counts as never used on a two-second volume")
+	}
+
+	mentioned := put(t, dir, key, "mentioned at once", created)
+	round(mentioned)
+	Mention(dir, mentioned, created)
+	round(mentioned)
+	if !isUsed(t, dir, key, mentioned) {
+		t.Fatal("a capture mentioned in its first second counts as never used on a two-second volume")
+	}
+}

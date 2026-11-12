@@ -103,3 +103,36 @@ func TestReadMissingLogIsEmpty(t *testing.T) {
 		t.Fatalf("missing log should read as empty, got %+v err=%v", got, err)
 	}
 }
+
+// ReadCounting reports the lines it could not parse, so a caller deciding
+// from the log knows the log has holes. The blank line every log ends in is
+// not one of them.
+func TestReadCountingReportsSkippedLines(t *testing.T) {
+	p := tempLog(t)
+	now := time.Unix(1700000000, 0)
+	_ = Log(p, "vault", "A", "x", now)
+	_ = Log(p, "set", "B", "x", now)
+	entries, skipped, err := ReadCounting(p)
+	if err != nil || len(entries) != 2 || skipped != 0 {
+		t.Fatalf("whole log: %d entries, %d skipped, %v; want 2, 0", len(entries), skipped, err)
+	}
+
+	f, err := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString("{not json\n\n   \n" + `{"action":"set","alias":"HALF` + "\n")
+	_ = f.Close()
+	_ = Log(p, "get", "A", "x", now)
+
+	entries, skipped, err = ReadCounting(p)
+	if err != nil || len(entries) != 3 || skipped != 2 {
+		t.Fatalf("damaged log: %d entries, %d skipped, %v; want 3, 2", len(entries), skipped, err)
+	}
+	if plain, err := Read(p); err != nil || len(plain) != 3 {
+		t.Fatalf("Read = %d entries, %v; want the same 3", len(plain), err)
+	}
+	if entries, skipped, err := ReadCounting(filepath.Join(t.TempDir(), "missing.log")); err != nil || entries != nil || skipped != 0 {
+		t.Fatalf("a missing log is an empty history, got %d entries, %d skipped, %v", len(entries), skipped, err)
+	}
+}

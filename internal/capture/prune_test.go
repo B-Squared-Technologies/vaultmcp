@@ -251,3 +251,144 @@ func TestExpireSkipsARefreshedCapture(t *testing.T) {
 		t.Fatalf("a file already gone must count as gone (gone=%v err=%v)", gone, err)
 	}
 }
+
+// A file that cannot be deleted must not end the pass: every other expired
+// capture is still looked at, and the failure is reported at the end. The
+// folder is made read-only, so each delete fails; a pass that gave up at the
+// first one would have looked at a single file.
+func TestPruneGoesOnPastAFileItCannotDelete(t *testing.T) {
+	if os.PathSeparator != '/' || os.Geteuid() == 0 {
+		t.Skip("needs a folder this user cannot delete from")
+	}
+	dir := filepath.Join(t.TempDir(), "captured")
+	key := testKey("m")
+	const n = 5
+	for i := 0; i < n; i++ {
+		put(t, dir, key, fmt.Sprintf("v-%d", i), t0)
+	}
+	// #nosec G302 -- read and traverse only, on purpose.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	got, err := Prune(dir, key, t0.Add(8*day), 0, false)
+	if err == nil {
+		t.Fatal("a pass that could delete nothing reported no error")
+	}
+	if got.Candidates != n {
+		t.Fatalf("the pass looked at %d of %d expired captures before giving up", got.Candidates, n)
+	}
+	if got.Deleted() != 0 {
+		t.Fatalf("files that could not be deleted were counted as deleted: %+v", got)
+	}
+
+	// With the folder writable again the same pass clears them all.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	got, err = Prune(dir, key, t0.Add(8*day), 0, false)
+	if err != nil || got.Unused != n {
+		t.Fatalf("Prune = %+v, %v; want %d deleted as never used", got, err, n)
+	}
+}
+
+// A marker dated far ahead was written while the clock was wrong. It must not
+// switch the daily prune off until that date. A marker a moment ahead is just
+// a parallel hook that read the clock a little later, and still counts.
+func TestFutureMarkerCountsAsStale(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "captured")
+	key := testKey("m")
+	old := put(t, dir, key, "old", t0)
+	now := t0.Add(8 * day)
+	marker := filepath.Join(dir, pruneMarker)
+
+	if err := touchMarker(marker, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if r := AutoPrune(dir, func() []byte { return key }, now); r != (PruneResult{}) || !Exists(dir, old) {
+		t.Fatalf("a marker two seconds ahead did not count as fresh: %+v", r)
+	}
+
+	if err := touchMarker(marker, now.Add(10*365*day)); err != nil {
+		t.Fatal(err)
+	}
+	r := AutoPrune(dir, func() []byte { return key }, now)
+	if Exists(dir, old) {
+		t.Fatal("a marker dated years ahead switched the daily prune off")
+	}
+	if want := (PruneResult{Candidates: 1, Unused: 1}); r != want {
+		t.Fatalf("AutoPrune returned %+v, want %+v", r, want)
+	}
+	if fi, err := os.Stat(marker); err != nil || !fi.ModTime().Equal(now) {
+		t.Fatalf("marker not brought back to now (err=%v)", err)
+	}
+}
+
+// A hook killed while writing a capture leaves a temp file that holds a
+// sealed secret. A prune removes it once it is a day old, and leaves alone a
+// younger one, which may belong to a hook that is still running.
+func TestPruneRemovesOldTempFiles(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "captured")
+	key := testKey("m")
+	alias := put(t, dir, key, "a young capture", t0)
+	now := t0.Add(2 * day)
+	files := map[string]time.Time{
+		tempPrefix + "old":   now.Add(-25 * time.Hour),
+		tempPrefix + "young": now.Add(-23 * time.Hour),
+		"notes":              now.Add(-25 * time.Hour), // not a temp file
+	}
+	for name, mtime := range files {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("sealed bytes"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, mtime, mtime); err != nil {
+			t.Fatal(err)
+		}
+	}
+	left := func() int { return fileCount(t, dir) }
+
+	dry, err := Prune(dir, key, now, 0, true)
+	if err != nil || dry.Temps != 1 || left() != 4 {
+		t.Fatalf("dry run = %+v, %v with %d files left; want 1 temp file counted and nothing deleted", dry, err, left())
+	}
+	got, err := Prune(dir, key, now, 0, false)
+	if err != nil || got != dry {
+		t.Fatalf("Prune = %+v, %v; want the dry run's counts %+v", got, err, dry)
+	}
+	if _, err := os.Stat(filepath.Join(dir, tempPrefix+"old")); !os.IsNotExist(err) {
+		t.Fatalf("the day-old temp file is still there (err=%v)", err)
+	}
+	if left() != 3 || !Exists(dir, alias) {
+		t.Fatalf("%d files left, want the capture, the young temp file and the other file", left())
+	}
+}
+
+// The prune a hook runs is bounded, so one hook call never pays for a whole
+// backlog. The files here do not open and are long past 30 days: each is one
+// candidate to delete, and cheap to make by the thousand.
+func TestAutoPruneStopsAtItsLimit(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "captured")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const extra = 5
+	old := t0.Add(-40 * day)
+	for i := 0; i < autoPruneLimit+extra; i++ {
+		path := filepath.Join(dir, fmt.Sprintf("A_%05d%s", i, ext))
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := AutoPrune(dir, func() []byte { return testKey("m") }, t0)
+	if r.Candidates != autoPruneLimit || r.Orphaned != autoPruneLimit {
+		t.Fatalf("AutoPrune = %+v, want exactly %d files handled", r, autoPruneLimit)
+	}
+	if n, _ := Count(dir); n != extra {
+		t.Fatalf("%d captures left, want the %d past the limit", n, extra)
+	}
+}
