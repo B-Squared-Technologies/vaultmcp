@@ -84,8 +84,10 @@ func Prune(dir string, key []byte, now time.Time, limit int, dryRun bool) (Prune
 
 // AutoPrune runs a bounded Prune at most once a day, tracked by the mtime of a
 // marker file inside dir. It is for the hook, after the hook has written its
-// answer: it reports nothing and touches nothing outside dir.
-func AutoPrune(dir string, key []byte, now time.Time) {
+// answer: it reports nothing and touches nothing outside dir. key is a
+// function so the hook derives the capture key only on the one run a day
+// that actually prunes.
+func AutoPrune(dir string, key func() []byte, now time.Time) {
 	marker := filepath.Join(dir, pruneMarker)
 	if fi, err := os.Stat(marker); err == nil && now.Sub(fi.ModTime()) < autoPruneEvery {
 		return
@@ -96,7 +98,7 @@ func AutoPrune(dir string, key []byte, now time.Time) {
 	if err := touchMarker(marker, now); err != nil {
 		return
 	}
-	_, _ = Prune(dir, key, now, autoPruneLimit, false)
+	_, _ = Prune(dir, key(), now, autoPruneLimit, false)
 }
 
 func touchMarker(marker string, now time.Time) error {

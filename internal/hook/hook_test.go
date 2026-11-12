@@ -26,12 +26,16 @@ func testDeps(t *testing.T) Deps {
 		Captured: dir + "/captured",
 	}
 	master := crypto.NewKey()
-	return Deps{Paths: p, MasterKey: master, CaptureKey: capture.Key(master, "test-machine"), ExePath: fakeExe, Now: time.Unix(0, 0)}
+	return Deps{Paths: p, MasterKey: master, CaptureKey: fixedKey(capture.Key(master, "test-machine")), ExePath: fakeExe, Now: time.Unix(0, 0)}
+}
+
+func fixedKey(k []byte) func() []byte {
+	return func() []byte { return k }
 }
 
 // awsAlias is the alias the hook gives awsKey when it captures it.
 func awsAlias(d Deps) string {
-	return capture.Alias(d.CaptureKey, "aws_access_key", awsKey)
+	return capture.Alias(d.CaptureKey(), "aws_access_key", awsKey)
 }
 
 func runPre(t *testing.T, d Deps, tool, input string) string {
@@ -65,7 +69,7 @@ func TestPreBashIngressVaultsAndSubstitutes(t *testing.T) {
 	}
 	assertNoCursorRootFields(t, out)
 	// The secret is now retrievable from its capture file.
-	got, err := capture.Read(d.Paths.Captured, d.CaptureKey, awsAlias(d))
+	got, err := capture.Read(d.Paths.Captured, d.CaptureKey(), awsAlias(d))
 	if err != nil {
 		t.Fatalf("read capture: %v", err)
 	}
@@ -300,7 +304,7 @@ func TestSecretSeenAgainCountsAsUsed(t *testing.T) {
 	d := testDeps(t)
 	used := func() bool {
 		t.Helper()
-		items, err := capture.List(d.Paths.Captured, d.CaptureKey)
+		items, err := capture.List(d.Paths.Captured, d.CaptureKey())
 		if err != nil || len(items) != 1 {
 			t.Fatalf("want one capture, got %d (err=%v)", len(items), err)
 		}
@@ -318,5 +322,25 @@ func TestSecretSeenAgainCountsAsUsed(t *testing.T) {
 	}
 	if !used() {
 		t.Fatal("a secret met again must mark its capture used")
+	}
+}
+
+// Deriving the capture key means reading the machine id, a process launch on
+// macOS. A run that captures nothing must not pay for it: not a plain command,
+// and not the expansion of an alias that already has a capture file.
+func TestCaptureKeyNotDerivedUnlessCapturing(t *testing.T) {
+	d := testDeps(t)
+	runPre(t, d, "Write", `{"file_path":"/x","content":"k=`+awsKey+`"}`)
+	alias := awsAlias(d)
+
+	d.CaptureKey = func() []byte {
+		t.Fatal("capture key derived on a run that captured nothing")
+		return nil
+	}
+	if out := runPre(t, d, "Bash", `{"command":"ls -la"}`); out != "" {
+		t.Fatalf("plain command was rewritten: %s", out)
+	}
+	if out := runPre(t, d, "Bash", `{"command":"echo [vault:`+alias+`]"}`); !strings.Contains(out, fakeExe+" get "+alias) {
+		t.Fatalf("existing capture alias was not expanded: %s", out)
 	}
 }

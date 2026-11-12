@@ -24,7 +24,7 @@ func fakeAWS(i int) string {
 }
 
 func fakeAlias(d Deps, i int) string {
-	return capture.Alias(d.CaptureKey, "aws_access_key", fakeAWS(i))
+	return capture.Alias(d.CaptureKey(), "aws_access_key", fakeAWS(i))
 }
 
 func runPost(d Deps, tool, response string) string {
@@ -64,9 +64,9 @@ func TestHookOnAnotherMachineStillCapturesAndRedacts(t *testing.T) {
 		t.Fatal("machine A did not redact")
 	}
 	b := a
-	b.CaptureKey = capture.Key(a.MasterKey, "another-machine")
+	b.CaptureKey = fixedKey(capture.Key(a.MasterKey, "another-machine"))
 
-	if _, err := capture.Read(a.Paths.Captured, b.CaptureKey, awsAlias(a)); err != crypto.ErrDecrypt {
+	if _, err := capture.Read(a.Paths.Captured, b.CaptureKey(), awsAlias(a)); err != crypto.ErrDecrypt {
 		t.Fatalf("machine B opened machine A's capture, err = %v", err)
 	}
 	out := runPre(t, b, "Bash", `{"command":"echo `+awsKey+`"}`)
@@ -79,7 +79,7 @@ func TestHookOnAnotherMachineStillCapturesAndRedacts(t *testing.T) {
 	if !strings.Contains(out, fakeExe+" get "+awsAlias(b)) {
 		t.Fatalf("machine B output lacks its own alias: %s", out)
 	}
-	got, err := capture.Read(b.Paths.Captured, b.CaptureKey, awsAlias(b))
+	got, err := capture.Read(b.Paths.Captured, b.CaptureKey(), awsAlias(b))
 	if err != nil || got.Value != awsKey {
 		t.Fatalf("machine B cannot read its own capture: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestParallelHooksLoseNoCapture(t *testing.T) {
 		if !strings.Contains(out, alias) || strings.Contains(out, fakeAWS(i)) {
 			t.Fatalf("run %d did not redact to its alias: %s", i, out)
 		}
-		got, err := capture.Read(d.Paths.Captured, d.CaptureKey, alias)
+		got, err := capture.Read(d.Paths.Captured, d.CaptureKey(), alias)
 		if err != nil || got.Value != fakeAWS(i) {
 			t.Fatalf("capture %d does not resolve after the parallel runs: %v", i, err)
 		}
@@ -299,7 +299,7 @@ func TestCaptureRecordsOriginAndAuditsOnce(t *testing.T) {
 			t.Fatal("expected a redaction")
 		}
 	}
-	got, err := capture.Read(d.Paths.Captured, d.CaptureKey, fakeAlias(d, 1))
+	got, err := capture.Read(d.Paths.Captured, d.CaptureKey(), fakeAlias(d, 1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +320,7 @@ func TestCaptureRecordsOriginAndAuditsOnce(t *testing.T) {
 func TestCaptureWithoutSessionOrCwd(t *testing.T) {
 	d := testDeps(t)
 	runPre(t, d, "Bash", `{"command":"echo `+fakeAWS(1)+`"}`)
-	got, err := capture.Read(d.Paths.Captured, d.CaptureKey, fakeAlias(d, 1))
+	got, err := capture.Read(d.Paths.Captured, d.CaptureKey(), fakeAlias(d, 1))
 	if err != nil || got.Session != "" || got.Cwd != "" || got.Value != fakeAWS(1) {
 		t.Fatalf("capture without session/cwd = %+v, %v", got, err)
 	}

@@ -186,7 +186,7 @@ func TestAutoPruneOncePerDay(t *testing.T) {
 	}
 
 	// No captures folder: nothing to do, and the folder is not created.
-	AutoPrune(dir, key, t0)
+	AutoPrune(dir, func() []byte { return key }, t0)
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatal("AutoPrune created the captures folder")
 	}
@@ -195,7 +195,7 @@ func TestAutoPruneOncePerDay(t *testing.T) {
 	now := t0.Add(8 * day)
 
 	// First run: no marker yet, so it prunes and leaves the marker at now.
-	AutoPrune(dir, key, now)
+	AutoPrune(dir, func() []byte { return key }, now)
 	if Exists(dir, old) {
 		t.Fatal("AutoPrune with no marker did not prune")
 	}
@@ -205,7 +205,7 @@ func TestAutoPruneOncePerDay(t *testing.T) {
 
 	// Within 24h of the marker: no prune, marker unchanged.
 	old2 := put(t, dir, key, "old2", t0)
-	AutoPrune(dir, key, now.Add(23*time.Hour))
+	AutoPrune(dir, func() []byte { return key }, now.Add(23*time.Hour))
 	if !Exists(dir, old2) {
 		t.Fatal("AutoPrune ran again within 24h")
 	}
@@ -214,7 +214,7 @@ func TestAutoPruneOncePerDay(t *testing.T) {
 	}
 
 	// A day later it runs again.
-	AutoPrune(dir, key, now.Add(25*time.Hour))
+	AutoPrune(dir, func() []byte { return key }, now.Add(25*time.Hour))
 	if Exists(dir, old2) {
 		t.Fatal("AutoPrune did not run after 24h")
 	}

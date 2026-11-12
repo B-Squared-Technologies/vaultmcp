@@ -48,9 +48,13 @@ var shellTools = map[string]bool{
 
 // Deps are the runtime dependencies for processing a hook event.
 type Deps struct {
-	Paths      vault.Paths
-	MasterKey  []byte
-	CaptureKey []byte // capture.Key(master, machine id): names and seals new captures
+	Paths     vault.Paths
+	MasterKey []byte
+	// CaptureKey returns capture.Key(master, machine id), which names and
+	// seals new captures. It is a function because reading the machine id
+	// costs a process launch on macOS and most hook runs meet no new secret:
+	// it is called only when one has to be captured.
+	CaptureKey func() []byte
 	ExePath    string // absolute path to this binary, for $(... get ALIAS)
 	Now        time.Time
 	// Session and Cwd are recorded on new captures so a capture can be traced
@@ -229,14 +233,15 @@ func (d Deps) aliasFor(store vault.Store, m detect.Match, tool string) (alias st
 	if a, found := namedAlias(store, m.Value); found {
 		return a, true
 	}
-	alias = capture.Alias(d.CaptureKey, m.Type, m.Value)
+	key := d.CaptureKey()
+	alias = capture.Alias(key, m.Type, m.Value)
 	// Named secrets are looked up first, so a named entry that already uses
 	// this alias (for a different value) would make the placeholder resolve
 	// to the wrong secret.
 	if _, clash := store[alias]; clash {
 		return "", false
 	}
-	created, err := capture.Write(d.Paths.Captured, d.CaptureKey, alias, capture.Entry{
+	created, err := capture.Write(d.Paths.Captured, key, alias, capture.Entry{
 		Value:   m.Value,
 		Kind:    m.Type,
 		Created: d.Now.UTC().Format(time.RFC3339),

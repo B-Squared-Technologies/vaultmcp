@@ -586,7 +586,7 @@ func TestMigrateApply(t *testing.T) {
 	}
 
 	// Old placeholders still resolve: through the hook's egress and `get`.
-	d := hook.Deps{Paths: v.p, MasterKey: v.master, CaptureKey: v.capKey, ExePath: "/bin/vaultmcp", Now: testNow}
+	d := hook.Deps{Paths: v.p, MasterKey: v.master, CaptureKey: func() []byte { return v.capKey }, ExePath: "/bin/vaultmcp", Now: testNow}
 	for _, alias := range []string{"GITHUB_TOKEN_2", "JWT_TOKEN", "GITHUB_TOKEN"} {
 		in := `{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo [vault:` + alias + `]"}}`
 		if got := string(hook.Process([]byte(in), d)); !strings.Contains(got, "/bin/vaultmcp get "+alias+")") {

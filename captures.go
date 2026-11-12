@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/B-Squared-Technologies/vaultmcp/internal/capture"
@@ -43,7 +44,11 @@ func runHook(stdin []byte, stdout io.Writer, p vault.Paths, now time.Time) {
 	if err != nil {
 		return
 	}
-	capKey, _ := captureKey(key)
+	// Derived on demand, at most once: see hook.Deps.CaptureKey.
+	capKey := sync.OnceValue(func() []byte {
+		k, _ := captureKey(key)
+		return k
+	})
 	out := hook.Process(stdin, hook.Deps{Paths: p, MasterKey: key, CaptureKey: capKey, ExePath: exe, Now: now})
 	if out != nil {
 		_, _ = stdout.Write(out)

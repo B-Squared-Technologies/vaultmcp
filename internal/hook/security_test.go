@@ -60,7 +60,7 @@ func TestHookOutputNeverLeaksSecret(t *testing.T) {
 		t.Fatalf("hook output missing or leaked the secret: %s", out)
 	}
 	// And on a subsequent egress reference, still no leak.
-	alias := capture.Alias(d.CaptureKey, "high_entropy_secret", entropySecret)
+	alias := capture.Alias(d.CaptureKey(), "high_entropy_secret", entropySecret)
 	out2 := runPre(t, d, "Bash", `{"command":"deploy --token [vault:`+alias+`]"}`)
 	if !strings.Contains(out2, fakeExe+" get "+alias) {
 		t.Fatalf("captured alias not expanded on egress: %s", out2)
@@ -131,7 +131,7 @@ func TestTamperedCaptureRejected(t *testing.T) {
 	raw[len(raw)-1] ^= 0x01
 	_ = os.WriteFile(path, raw, 0o600)
 
-	if _, err := capture.Read(d.Paths.Captured, d.CaptureKey, awsAlias(d)); err != crypto.ErrDecrypt {
+	if _, err := capture.Read(d.Paths.Captured, d.CaptureKey(), awsAlias(d)); err != crypto.ErrDecrypt {
 		t.Fatalf("tampered capture was accepted, err = %v", err)
 	}
 }
