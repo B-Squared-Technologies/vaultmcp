@@ -55,8 +55,11 @@ If VaultMCP ever errors, it **fails open** — the tool call proceeds untouched.
 ```bash
 vaultmcp set STRIPE_KEY          # store a secret (prompts — no echo)
 vaultmcp get STRIPE_KEY          # print a value (pipe-friendly)
-vaultmcp list                    # list aliases (values masked)
+vaultmcp list                    # list named secrets (values masked)
+vaultmcp list --captured         # list what the hook captured by itself
 vaultmcp delete STRIPE_KEY       # remove a secret (--yes to skip confirm)
+vaultmcp prune --dry-run         # show which captures have expired (omit the flag to delete them)
+vaultmcp migrate-captures        # move old hook captures out of store.enc (dry run; add --apply)
 vaultmcp status                  # vault + hook health
 vaultmcp audit --last 50         # view the hash-chained audit log
 vaultmcp unlock                  # cache the key for this machine
@@ -71,6 +74,21 @@ Deploy the Lambda using [vault:AWS_ACCESS_KEY] and [vault:AWS_SECRET]
 ```
 
 In a shell tool call, the alias resolves to the real value at execution; the value never appears in the conversation. The CLI (`set` / `get` / `$(vaultmcp get ALIAS)`) works in any agent that can run a shell command, even if hooks are off.
+
+## Named secrets and captures
+
+VaultMCP keeps two kinds of secret apart.
+
+- **Named secrets** are the ones you store with `vaultmcp set NAME`. They live together in `store.enc`, they never expire, and only you change them. The hook reads that file and never writes it.
+- **Captures** are secrets the hook found by itself in a tool input or result. Each one gets its own sealed file in `~/.vaultmcp/captured/`. Its alias is the kind of secret followed by 16 letters and digits taken from a keyed hash of the value. The same value always gets the same alias, and an alias never comes to mean a different value, so an old placeholder cannot quietly resolve to another secret. Because every capture is its own file, hooks running in parallel cannot lose each other's captures.
+
+An alias is always looked up among the named secrets first, then among the captures. `vaultmcp list` shows the named secrets and a count of captures; `vaultmcp list --captured` shows the captures. If a secret you named turns up in a tool call, the hook uses your name for it and captures nothing.
+
+**Locked to the machine.** Capture files are sealed with a key derived from the master key and an identifier of the machine: the Hardware UUID on macOS, `/etc/machine-id` on Linux, `MachineGuid` on Windows. A copy of the vault folder does not open captures on another machine, even where the master key is known. The honest limit: the machine identifier is not a secret, so someone who holds the master key and also learns that machine's identifier can still open them. Named secrets in `store.enc` are not machine-locked. On a machine that exposes no identifier, captures still work but are not locked, and `vaultmcp status` says so.
+
+**Expiry.** A capture that is never read is deleted after 7 days. A capture that has been read (`vaultmcp get`, which is also what a shell substitution runs) is deleted once it has gone 30 days without being read. Named secrets never expire. The hook does this cleanup at most once a day, up to 200 files at a time. `vaultmcp prune` does all of it at once, and `vaultmcp prune --dry-run` only reports.
+
+**Migrating an older vault.** Before captures had their own files, the hook stored them in `store.enc` beside your named secrets. `vaultmcp migrate-captures` shows what it would move, and `vaultmcp migrate-captures --apply` moves it. An entry moves only when its name is one the hook generates, the audit log shows the hook stored it, and the audit log never shows you setting it. Anything else stays where it is and is listed by name. Moved captures keep their old alias, so placeholders already written into files and transcripts still work. Before changing anything, `--apply` copies `store.enc` to `store.enc.pre-captures-<date>-<time>`. That backup still holds every capture in the old format, so delete it once you have confirmed the move.
 
 ## Unlocking the vault
 
@@ -105,7 +123,8 @@ Not flagged: URLs, `${VARS}`, `$(cmd)`, existing `[vault:…]` aliases, UUIDs, l
 - **Encryption:** XChaCha20-Poly1305 (AEAD) — a 24-byte random nonce per write, encrypt-then-authenticate. Tampered stores are rejected.
 - **Key derivation:** Argon2id (64 MiB, t=3) — memory-hard, well beyond PBKDF2.
 - **Key storage:** OS keychain, or an Argon2id-wrapped key file. Never a plaintext passphrase on disk.
-- **At rest:** `~/.vaultmcp/` is `0700`, `store.enc` is `0600`.
+- **At rest:** `~/.vaultmcp/` and `captured/` are `0700`, `store.enc` and every capture file are `0600`.
+- **Machine lock:** capture files use a key derived (HKDF-SHA256) from the master key and the machine's identifier. See [Named secrets and captures](#named-secrets-and-captures) for what that does and does not protect.
 - **Audit:** every vault operation is logged to `~/.vaultmcp/audit.log`, hash-chained so tampering is detectable. Values are never logged — only alias names.
 
 Run `vaultmcp audit` to review.

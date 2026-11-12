@@ -8,6 +8,11 @@
 //     $(<abs> get ALIAS) for Bash, or a static [vault:ALIAS] placeholder
 //     otherwise.
 //
+// A detected secret that a person already stored keeps that name. Any other
+// is captured into its own file under captured/ (see the capture package).
+// The hook only ever READS store.enc: parallel hook processes rewriting one
+// shared file is how captures used to get lost.
+//
 // PostToolUse: redact secrets that appear in a tool's RESULT before Claude
 // sees them (e.g. `cat .env`), via updatedToolOutput. This is the fully
 // transcript-safe path.
@@ -23,6 +28,7 @@ import (
 	"time"
 
 	"github.com/B-Squared-Technologies/vaultmcp/internal/audit"
+	"github.com/B-Squared-Technologies/vaultmcp/internal/capture"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/detect"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/vault"
 )
@@ -42,10 +48,16 @@ var shellTools = map[string]bool{
 
 // Deps are the runtime dependencies for processing a hook event.
 type Deps struct {
-	Paths     vault.Paths
-	MasterKey []byte
-	ExePath   string // absolute path to this binary, for $(... get ALIAS)
-	Now       time.Time
+	Paths      vault.Paths
+	MasterKey  []byte
+	CaptureKey []byte // capture.Key(master, machine id): names and seals new captures
+	ExePath    string // absolute path to this binary, for $(... get ALIAS)
+	Now        time.Time
+	// Session and Cwd are recorded on new captures so a capture can be traced
+	// to where it came from. Process fills them from the hook JSON; either may
+	// be empty.
+	Session string
+	Cwd     string
 }
 
 type envelope struct {
@@ -54,6 +66,8 @@ type envelope struct {
 	ToolInput json.RawMessage
 	ToolResp  json.RawMessage
 	Cursor    bool
+	Session   string
+	Cwd       string
 }
 
 // claudePreOutput is the PreToolUse response Claude, Grok, and Codex accept.
@@ -86,6 +100,7 @@ func Process(stdin []byte, d Deps) []byte {
 	if !ok {
 		return nil
 	}
+	d.Session, d.Cwd = env.Session, env.Cwd
 	switch env.Event {
 	case "PreToolUse":
 		return d.preToolUse(env)
@@ -128,6 +143,8 @@ func parseEnvelope(stdin []byte) (envelope, bool) {
 		ToolInput: firstRaw(get("tool_input", "toolInput")),
 		ToolResp:  firstRaw(get("tool_response", "toolResponse", "tool_result", "toolResult", "tool_output", "output")),
 		Cursor:    isCursorEvent(rawEvent),
+		Session:   str("session_id", "sessionId"),
+		Cwd:       str("cwd"),
 	}
 
 	// Cursor beforeShellExecution often puts the command at the top level.
@@ -183,6 +200,64 @@ func (d Deps) sub(alias string) string {
 	return "$(" + d.ExePath + " get " + alias + ")"
 }
 
+// known reports whether alias resolves: a named secret, or a capture file.
+// The capture check is one stat, with no decrypt and no directory listing.
+func (d Deps) known(store vault.Store, alias string) bool {
+	if _, ok := store[alias]; ok {
+		return true
+	}
+	return capture.Exists(d.Paths.Captured, alias)
+}
+
+// namedAlias returns the named secret holding exactly value. When several do,
+// the smallest name wins so every run picks the same one.
+func namedAlias(store vault.Store, value string) (string, bool) {
+	best, found := "", false
+	for a, v := range store {
+		if v == value && (!found || a < best) {
+			best, found = a, true
+		}
+	}
+	return best, found
+}
+
+// aliasFor returns the alias to put in place of a detected secret, capturing
+// the secret first if nobody stored it under a name. ok is false when the
+// secret could not be persisted; the caller must then emit nothing, because a
+// redaction that cannot be resolved later would lose the value.
+func (d Deps) aliasFor(store vault.Store, m detect.Match, tool string) (alias string, ok bool) {
+	if a, found := namedAlias(store, m.Value); found {
+		return a, true
+	}
+	alias = capture.Alias(d.CaptureKey, m.Type, m.Value)
+	// Named secrets are looked up first, so a named entry that already uses
+	// this alias (for a different value) would make the placeholder resolve
+	// to the wrong secret.
+	if _, clash := store[alias]; clash {
+		return "", false
+	}
+	created, err := capture.Write(d.Paths.Captured, d.CaptureKey, alias, capture.Entry{
+		Value:   m.Value,
+		Kind:    m.Type,
+		Created: d.Now.UTC().Format(time.RFC3339),
+		Tool:    tool,
+		Session: d.Session,
+		Cwd:     d.Cwd,
+	})
+	if err != nil {
+		return "", false
+	}
+	if created {
+		// The hook has always tightened the vault folder to owner-only when
+		// it stored something; a folder that predates the vault may be wider.
+		_ = d.Paths.EnsureDir()
+		_ = audit.Log(d.Paths.Audit, "vault", alias, tool, d.Now)
+	} else {
+		capture.Seen(d.Paths.Captured, alias, d.Now)
+	}
+	return alias, true
+}
+
 func (d Deps) preToolUse(env envelope) []byte {
 	if len(env.ToolInput) == 0 {
 		return nil
@@ -194,13 +269,12 @@ func (d Deps) preToolUse(env envelope) []byte {
 	text := string(env.ToolInput)
 	isBash := isShellTool(env.ToolName)
 	changed := false
-	created := false
 
 	// Egress: expand pre-existing aliases (Bash only) to command substitutions.
 	if isBash {
 		text = aliasRe.ReplaceAllStringFunc(text, func(m string) string {
 			name := aliasRe.FindStringSubmatch(m)[1]
-			if _, ok := store[name]; ok {
+			if d.known(store, name) {
 				changed = true
 				return d.sub(name)
 			}
@@ -211,10 +285,9 @@ func (d Deps) preToolUse(env envelope) []byte {
 	// Ingress: vault freshly-detected secrets and replace them.
 	var rawSecrets []string
 	for _, match := range detect.Find(text) {
-		alias, isNew := vault.SetByValue(store, match.Value, match.Type)
-		if isNew {
-			created = true
-			_ = audit.Log(d.Paths.Audit, "vault", alias, env.ToolName, d.Now)
+		alias, ok := d.aliasFor(store, match, env.ToolName)
+		if !ok {
+			return nil // fail open — don't emit a redaction we couldn't persist
 		}
 		replacement := "[vault:" + alias + "]"
 		if isBash {
@@ -234,12 +307,6 @@ func (d Deps) preToolUse(env envelope) []byte {
 		return nil
 	}
 
-	if created {
-		_ = d.Paths.EnsureDir()
-		if err := vault.Save(d.Paths.Store, store, d.MasterKey); err != nil {
-			return nil // fail open — don't emit a redaction we couldn't persist
-		}
-	}
 	if !changed {
 		return nil
 	}
@@ -291,16 +358,16 @@ func (d Deps) postToolUse(env envelope) []byte {
 	if err := json.Unmarshal(env.ToolResp, &resp); err != nil {
 		return nil // not JSON we can safely rewrite — fail open
 	}
-	created := false
 	changed := false
+	persisted := true
 	var rawSecrets []string
 	var redacted []string
 	redact := func(s string) string {
 		for _, match := range detect.Find(s) {
-			alias, isNew := vault.SetByValue(store, match.Value, match.Type)
-			if isNew {
-				created = true
-				_ = audit.Log(d.Paths.Audit, "vault", alias, env.ToolName, d.Now)
+			alias, ok := d.aliasFor(store, match, env.ToolName)
+			if !ok {
+				persisted = false
+				continue
 			}
 			if ns := strings.ReplaceAll(s, match.Value, "[vault:"+alias+"]"); ns != s {
 				s = ns
@@ -312,19 +379,14 @@ func (d Deps) postToolUse(env envelope) []byte {
 		return s
 	}
 	resp = walkStrings(resp, redact)
-	if !changed {
+	// Fail open — don't emit a redaction we couldn't persist.
+	if !persisted || !changed {
 		return nil
 	}
 	// Safety invariant: never emit a payload where a raw secret survived
 	// replacement (\x00 keeps a value from matching across two fields).
 	if leaks(strings.Join(redacted, "\x00"), rawSecrets) {
 		return nil
-	}
-	if created {
-		_ = d.Paths.EnsureDir()
-		if err := vault.Save(d.Paths.Store, store, d.MasterKey); err != nil {
-			return nil
-		}
 	}
 	redactedResp, err := json.Marshal(resp)
 	if err != nil {

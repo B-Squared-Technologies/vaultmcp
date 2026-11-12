@@ -95,3 +95,26 @@ func Verify(path string) (bool, error) {
 	}
 	return true, nil
 }
+
+// Read returns every entry in the log, oldest first. Lines that do not parse
+// are skipped rather than failing the read: a caller deciding what an alias's
+// history allows must not be blocked by one damaged line. A missing log is an
+// empty history.
+func Read(path string) ([]Entry, error) {
+	// #nosec G304 -- path is internally derived (~/.vaultmcp/audit.log).
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []Entry
+	for _, line := range strings.Split(string(data), "\n") {
+		var e Entry
+		if json.Unmarshal([]byte(line), &e) == nil {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}

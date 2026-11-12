@@ -75,3 +75,31 @@ func TestContextTruncatedAndNoValueLogged(t *testing.T) {
 		t.Fatal("audit log must never contain a value field")
 	}
 }
+
+func TestReadSkipsUnparsableLines(t *testing.T) {
+	p := tempLog(t)
+	now := time.Unix(1700000000, 0)
+	_ = Log(p, "vault", "A", "Bash", now)
+	f, err := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString("this line is not json\n\n")
+	_ = f.Close()
+	_ = Log(p, "get", "A", "cli", now)
+
+	got, err := Read(p)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(got) != 2 || got[0].Action != "vault" || got[1].Action != "get" || got[1].Alias != "A" {
+		t.Fatalf("Read = %+v, want the two valid entries in order", got)
+	}
+}
+
+func TestReadMissingLogIsEmpty(t *testing.T) {
+	got, err := Read(filepath.Join(t.TempDir(), "does-not-exist.log"))
+	if err != nil || len(got) != 0 {
+		t.Fatalf("missing log should read as empty, got %+v err=%v", got, err)
+	}
+}
