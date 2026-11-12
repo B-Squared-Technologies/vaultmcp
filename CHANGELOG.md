@@ -79,5 +79,8 @@ captures are sealed with a key derived from it.
 
 - A placeholder that sits in a file for 30 days without an agent using it
   stops resolving. Reading the file does not count as use.
+- If two hooks repair the same damaged capture file in the same moment and
+  something reads it in between, its "used" mark can be lost, and that
+  capture then expires after 7 days where it would have had 30.
 - On Windows, a binary path with backslashes or spaces still breaks the
   shell rewrite. That fix is next.
