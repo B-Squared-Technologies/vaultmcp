@@ -303,9 +303,10 @@ type Item struct {
 	Readable bool // false: sealed on another machine, or damaged
 }
 
-// List opens every capture in dir. A file that does not open is still listed,
-// as not readable, so it is visible rather than silently missing.
-func List(dir string, key []byte) ([]Item, error) {
+// List opens every capture in dir, trying each key in turn. A file that opens
+// with none of them is still listed, as not readable, so it is visible rather
+// than silently missing.
+func List(dir string, keys ...[]byte) ([]Item, error) {
 	aliases, err := scan(dir)
 	if err != nil {
 		return nil, err
@@ -314,8 +315,11 @@ func List(dir string, key []byte) ([]Item, error) {
 	for _, alias := range aliases {
 		it := Item{Alias: alias}
 		fi, statErr := os.Stat(filepath.Join(dir, alias+ext))
-		if e, err := Read(dir, key, alias); err == nil && statErr == nil {
-			it.Entry, it.Readable, it.Used = e, true, used(e, fi.ModTime())
+		for _, key := range keys {
+			if e, err := Read(dir, key, alias); err == nil && statErr == nil {
+				it.Entry, it.Readable, it.Used = e, true, used(e, fi.ModTime())
+				break
+			}
 		}
 		items = append(items, it)
 	}

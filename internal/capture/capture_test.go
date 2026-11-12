@@ -437,3 +437,20 @@ func TestPublishNeverReplaces(t *testing.T) {
 		t.Fatalf("%d files in the folder, want 2", n)
 	}
 }
+
+// A capture sealed without a machine id is listed in full when the key that
+// opens it is offered second, and stays "not readable" when it is not.
+func TestListTriesEachKey(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "captured")
+	bound, unbound := testKey("m"), testKey("")
+	alias := put(t, dir, unbound, "sealed-without-an-id", t0)
+
+	items, err := List(dir, bound)
+	if err != nil || len(items) != 1 || items[0].Readable {
+		t.Fatalf("with the wrong key only: %+v, %v", items, err)
+	}
+	items, err = List(dir, bound, unbound)
+	if err != nil || len(items) != 1 || !items[0].Readable || items[0].Alias != alias || items[0].Entry.Value != "sealed-without-an-id" {
+		t.Fatalf("with both keys: %+v, %v", items, err)
+	}
+}

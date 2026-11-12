@@ -116,8 +116,14 @@ func listNamed(w io.Writer, p vault.Paths, master []byte) error {
 // listCaptured prints the hook's captures: alias, kind, age and whether the
 // capture was ever read. Values are masked exactly like named ones.
 func listCaptured(w io.Writer, p vault.Paths, master []byte, now time.Time) error {
-	capKey, _ := captureKey(master)
-	items, err := capture.List(p.Captured, capKey)
+	// The second key opens captures made in a moment when the machine id
+	// could not be read, the same ones `get` falls back to.
+	capKey, locked := captureKey(master)
+	keys := [][]byte{capKey}
+	if locked {
+		keys = append(keys, capture.Key(master, ""))
+	}
+	items, err := capture.List(p.Captured, keys...)
 	if err != nil {
 		return err
 	}

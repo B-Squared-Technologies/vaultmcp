@@ -205,12 +205,21 @@ func (d Deps) sub(alias string) string {
 }
 
 // known reports whether alias resolves: a named secret, or a capture file.
-// The capture check is one stat, with no decrypt and no directory listing.
+// The capture check is a stat, with no decrypt and no directory listing.
+//
+// A capture that is known here is about to be read by the command the hook
+// hands back, so it is marked as in use now. Otherwise the daily prune, which
+// runs at the end of this same hook call, could delete an old never-read
+// capture before the shell gets to read it.
 func (d Deps) known(store vault.Store, alias string) bool {
 	if _, ok := store[alias]; ok {
 		return true
 	}
-	return capture.Exists(d.Paths.Captured, alias)
+	if !capture.Exists(d.Paths.Captured, alias) {
+		return false
+	}
+	capture.Seen(d.Paths.Captured, alias, d.Now)
+	return true
 }
 
 // namedAlias returns the named secret holding exactly value. When several do,

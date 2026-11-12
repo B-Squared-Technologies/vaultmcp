@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/B-Squared-Technologies/vaultmcp/internal/audit"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/capture"
@@ -379,5 +380,27 @@ func TestDamagedCaptureIsNotReused(t *testing.T) {
 	}
 	if out := runPost(d, "Bash", `{"stdout":"`+awsKey+`","stderr":""}`); out != "" {
 		t.Fatalf("hook reused a capture that does not open on a result: %s", out)
+	}
+}
+
+// Expanding an alias means the shell is about to read that capture. An old
+// capture nobody read yet must survive the prune that runs right after the
+// hook answers, or the command would get an empty value.
+func TestExpandedCaptureSurvivesThePruneThatFollows(t *testing.T) {
+	d := testDeps(t)
+	if out := runPre(t, d, "Write", `{"file_path":"/x","content":"k=`+awsKey+`"}`); !strings.Contains(out, awsAlias(d)) {
+		t.Fatalf("did not capture: %s", out)
+	}
+	later := d
+	later.Now = d.Now.Add(8 * 24 * time.Hour)
+	out := runPre(t, later, "Bash", `{"command":"echo `+placeholder(awsAlias(d))+`"}`)
+	if !strings.Contains(out, " get "+awsAlias(d)+")") {
+		t.Fatalf("alias not expanded: %s", out)
+	}
+	if _, err := capture.Prune(d.Paths.Captured, d.CaptureKey(), later.Now, 0, false); err != nil {
+		t.Fatal(err)
+	}
+	if !capture.Exists(d.Paths.Captured, awsAlias(d)) {
+		t.Fatal("the capture the command is about to read was pruned")
 	}
 }
