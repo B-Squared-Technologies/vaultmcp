@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1070,9 +1071,14 @@ func TestLockInAnEmptyFolderKeepsTheSharedKey(t *testing.T) {
 // A captures folder that cannot be listed may hold captures. `set` must not
 // take "could not look" for "nothing there" and make a new key.
 func TestNoNewKeyWhenCapturesCannotBeListed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Windows reports a plain file in the folder's place as "no such
+		// folder", which is the empty case, not a failed listing.
+		t.Skip("no portable way to make a folder unlistable on Windows")
+	}
 	useMockKeychain(t)
 	v := newTestVault(t)
-	// A plain file where the folder should be: listing it fails on every OS.
+	// A plain file where the folder should be: listing it fails.
 	if err := os.MkdirAll(v.p.Dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
