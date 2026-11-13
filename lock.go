@@ -146,6 +146,7 @@ func cmdUnlock(args []string) error {
 		_ = os.Remove(p.Locked)
 		fmt.Println("  the passphrase is right, but this machine has no OS keychain to keep the vault unlocked in.")
 		fmt.Println("  Commands will ask for the passphrase each time. For unattended use, set VAULTMCP_KEY.")
+		fmt.Println("  Agent tool calls are no longer stopped, and the hook cannot hide secrets from them until it can reach the key.")
 		return nil
 	}
 	if err := keyring.ToKeychain(master); err != nil {

@@ -792,3 +792,30 @@ func TestRecoverUnlocksEvenWhenTheKeyFileNeedsNoChange(t *testing.T) {
 		t.Fatalf("after recover the hook answered a plain call: %s", got)
 	}
 }
+
+// Recover must not end a lock unless the hook can reach the key afterwards.
+// Here the machine has no keychain to put it in.
+func TestRecoverKeepsTheLockWhenTheKeyStaysOutOfReach(t *testing.T) {
+	v, code := keychainVault(t)
+	answers(t, "a passphrase for the lock")
+	if err := cmdLock(nil); err != nil {
+		t.Fatal(err)
+	}
+	zk.MockInitWithError(errors.New("no keychain here"))
+	t.Cleanup(zk.MockInit)
+	answers(t, code, "a new passphrase")
+	var err error
+	stdout, _ := output(t, func() { err = cmdRecover(nil) })
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if _, err := keyring.UnwrapFromFile(v.p.Key, "a new passphrase"); err != nil {
+		t.Fatalf("recover did not write the new key.enc: %v", err)
+	}
+	if !fileExists(v.p.Locked) || !strings.Contains(stdout, "still locked") || strings.Contains(stdout, "vault is unlocked") {
+		t.Fatalf("marker=%v out=%q", fileExists(v.p.Locked), stdout)
+	}
+	if got := hookSays(t, v.p, claudeEvent, testNow); !strings.Contains(got, `"permissionDecision":"deny"`) {
+		t.Fatalf("the hook let a call through after a recover that could not unlock: %s", got)
+	}
+}

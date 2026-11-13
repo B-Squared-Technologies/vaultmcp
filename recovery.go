@@ -258,48 +258,55 @@ func cmdRecover(args []string) error {
 	if !opensStore(p, master) {
 		return errors.New("the recovery file opened, but the key in it does not open store.enc: the two are not from the same vault. Nothing was changed")
 	}
-	where, err := restoreKey(p, master)
+	where, reachable, err := restoreKey(p, master)
 	if err != nil {
 		return err
 	}
-	// The vault is open again by its owner's own hand, so a lock that was in
-	// force is over.
-	_ = os.Remove(p.Locked)
 	_ = audit.Log(p.Audit, "recover", "MASTER", "cli", time.Now())
 	fmt.Printf("  recovered: %s\n", where)
+	// A lock that was in force ends only if the hook can reach the key again.
+	// Ending it otherwise would swap "tool calls are stopped" for "tool calls
+	// run with nothing hidden".
+	switch {
+	case reachable:
+		_ = os.Remove(p.Locked)
+	case fileExists(p.Locked):
+		fmt.Println("  The vault is still locked, because the key is not in the OS keychain: agent tool")
+		fmt.Println("  calls stay stopped. Run 'vaultmcp unlock'.")
+	}
 	return nil
 }
 
 // restoreKey puts a recovered master key back where this vault keeps its key,
-// and says where that is. It never writes over a key it has not checked: a
+// and says where that is and whether the hook can reach it there (the OS
+// keychain, or key.enc with VAULTMCP_KEY set). It never writes over a key it has not checked: a
 // keychain entry holding another key is left alone, and a key.enc that is in
 // the way is moved aside, not deleted.
-func restoreKey(p vault.Paths, master []byte) (string, error) {
+func restoreKey(p vault.Paths, master []byte) (where string, reachable bool, err error) {
 	env := os.Getenv("VAULTMCP_KEY")
 	inKeychain, hasKeychainKey := keyring.FromKeychain()
 	same := hasKeychainKey && subtle.ConstantTimeCompare(inKeychain, master) == 1
 	if hasKeychainKey && !same && env == "" {
-		return "", errors.New("the OS keychain holds a different key, most likely another vault folder's, and it was left alone. To recover this vault with a passphrase instead, set VAULTMCP_KEY to the passphrase you want and run 'vaultmcp recover' again")
+		return "", false, errors.New("the OS keychain holds a different key, most likely another vault folder's, and it was left alone. To recover this vault with a passphrase instead, set VAULTMCP_KEY to the passphrase you want and run 'vaultmcp recover' again")
 	}
 
 	// Keychain setup: no passphrase in play and a keychain to use.
 	if env == "" && !fileExists(p.Key) && keyring.Available() {
 		if same {
-			return "the key was already in the OS keychain, nothing had to change", nil
+			return "the key was already in the OS keychain, nothing had to change", true, nil
 		}
 		if err := keyring.ToKeychain(master); err != nil {
-			return "", fmt.Errorf("the OS keychain refused the key (%w). To recover with a passphrase instead, set VAULTMCP_KEY to the passphrase you want and run 'vaultmcp recover' again", err)
+			return "", false, fmt.Errorf("the OS keychain refused the key (%w). To recover with a passphrase instead, set VAULTMCP_KEY to the passphrase you want and run 'vaultmcp recover' again", err)
 		}
-		return "the key is back in the OS keychain", nil
+		return "the key is back in the OS keychain", true, nil
 	}
 
 	// Passphrase setup: a new key.enc, under VAULTMCP_KEY or a passphrase
 	// chosen now.
 	pass := env
 	if pass == "" {
-		var err error
 		if pass, err = askSecret("New passphrase: ", true); err != nil {
-			return "", err
+			return "", false, err
 		}
 	}
 	wrote := "key.enc now opens with "
@@ -310,25 +317,30 @@ func restoreKey(p vault.Paths, master []byte) (string, error) {
 		// has been written and read back, so a failed write costs nothing.
 		aside := p.Key + ".before-recover-" + time.Now().Format("20060102-150405")
 		if err := copyStore(p.Key, aside); err != nil {
-			return "", fmt.Errorf("the old key.enc could not be copied aside, so nothing was changed: %w", err)
+			return "", false, fmt.Errorf("the old key.enc could not be copied aside, so nothing was changed: %w", err)
 		}
 		if err := writeKeyCopy(p.Key, master, pass); err != nil {
 			_ = os.Remove(aside)
-			return "", err
+			return "", false, err
 		}
 		fmt.Fprintf(os.Stderr, "  the old key.enc was kept as %s\n", aside)
 	} else if err := writeKeyCopy(p.Key, master, pass); err != nil {
-		return "", err
+		return "", false, err
 	}
 	if env != "" {
-		return wrote + "the passphrase in VAULTMCP_KEY", nil
+		return wrote + "the passphrase in VAULTMCP_KEY", true, nil
 	}
 	// With a keychain to hand and no key in it, finish the job: a person who
-	// just recovered wants the vault open, not one more prompt away. The
-	// caller is about to end any lock, and a vault that is no longer locked
-	// but whose key the hook cannot reach would run agents unredacted.
-	if same || (!hasKeychainKey && keyring.Available() && keyring.ToKeychain(master) == nil) {
-		return wrote + "that passphrase, and the vault is unlocked", nil
+	// just recovered wants the vault open, not one more prompt away.
+	if same {
+		return wrote + "that passphrase, and the vault is unlocked", true, nil
 	}
-	return wrote + "that passphrase", nil
+	if !keyring.Available() {
+		return wrote + "that passphrase", false, nil
+	}
+	if err := keyring.ToKeychain(master); err != nil {
+		fmt.Fprintf(os.Stderr, "  warning: the OS keychain refused the key (%v)\n", err)
+		return wrote + "that passphrase", false, nil
+	}
+	return wrote + "that passphrase, and the vault is unlocked", true, nil
 }
