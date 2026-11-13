@@ -224,39 +224,82 @@ func ensureCursorHook(hooks map[string]any, event, command string) bool {
 // hook. Taking it for ours meant install skipped its own registration because
 // of it, and removed it when cleaning up.
 //
-// This reads words, not shell grammar. A command that merely prints the words
-// "vaultmcp hook" would pass for ours; no parser short of a shell's own rules
-// that out, and install has to stay able to read a command a person edited.
+// The command is split the way a shell splits it into words, so a path with a
+// space or an ampersand inside quotes stays one word. It is not run through a
+// shell's grammar beyond that: a command that merely prints the words
+// "vaultmcp hook" would still pass for ours.
 func isVaultHook(cmd string) bool {
-	words := strings.Fields(cmd)
+	words := shellWords(cmd)
 	for i, w := range words {
-		w = hookWord(w)
 		name := strings.ToLower(w[strings.LastIndexAny(w, `/\`)+1:])
 		name = strings.TrimSuffix(name, ".exe")
 		if name == "vaultmcp-hook" {
 			return true
 		}
-		if name == "vaultmcp" && i+1 < len(words) && hookWord(words[i+1]) == "hook" {
+		if name == "vaultmcp" && i+1 < len(words) && words[i+1] == "hook" {
 			return true
 		}
 	}
 	return false
 }
 
-// hookWord takes the quotes off one word of a command and cuts it where a
-// redirect or a separator is written straight onto it, as in "hook>>log". A
-// character inside quotes or behind a backslash is part of a file name (a
-// folder called R&D) and is not cut at.
-func hookWord(w string) string {
-	if !strings.HasPrefix(w, "'") && !strings.HasPrefix(w, `"`) {
-		for i := 0; i < len(w); i++ {
-			if strings.IndexByte("<>;&|", w[i]) >= 0 && (i == 0 || w[i-1] != '\\') {
-				w = w[:i]
-				break
-			}
+// shellWords splits a command into words as a shell would: on blanks that are
+// not inside quotes, with the quotes taken off. A redirect or a separator
+// (< > ; & |) outside quotes ends a word and stands as a word of its own, so
+// "hook>>log" gives "hook", ">", ">", "log". A backslash outside quotes takes
+// the next character literally when that character is one a shell would act
+// on; before anything else it is kept, because on Windows it is part of a
+// path.
+func shellWords(cmd string) []string {
+	var words []string
+	var cur strings.Builder
+	inWord := false
+	end := func() {
+		if inWord {
+			words = append(words, cur.String())
+			cur.Reset()
+			inWord = false
 		}
 	}
-	return strings.Trim(w, `'"`)
+	var quote byte
+	for i := 0; i < len(cmd); i++ {
+		c := cmd[i]
+		switch {
+		case quote == '\'':
+			if c == '\'' {
+				quote = 0
+			} else {
+				cur.WriteByte(c)
+			}
+		case quote == '"':
+			switch {
+			case c == '"':
+				quote = 0
+			case c == '\\' && i+1 < len(cmd) && strings.IndexByte(`"\`, cmd[i+1]) >= 0:
+				i++
+				cur.WriteByte(cmd[i])
+			default:
+				cur.WriteByte(c)
+			}
+		case c == '\'' || c == '"':
+			quote = c
+			inWord = true
+		case c == '\\' && i+1 < len(cmd) && strings.IndexByte(" \t'\"<>;&|", cmd[i+1]) >= 0:
+			i++
+			cur.WriteByte(cmd[i])
+			inWord = true
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+			end()
+		case strings.IndexByte("<>;&|", c) >= 0:
+			end()
+			words = append(words, string(c))
+		default:
+			cur.WriteByte(c)
+			inWord = true
+		}
+	}
+	end()
+	return words
 }
 
 // removeVaultHook takes the vaultmcp command out of event's matcher entries.

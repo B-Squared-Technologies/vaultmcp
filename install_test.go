@@ -270,6 +270,14 @@ func TestIsVaultHook(t *testing.T) {
 		"'/opt/R&D/vaultmcp' hook":                       true,
 		`/opt/R\&D/vaultmcp hook`:                        true,
 		"'/opt/R&D dir/vaultmcp' hook":                   true,
+		"'/opt/a b/R&D/vaultmcp' hook":                   true,
+		`"/opt/a b/R&D/vaultmcp" hook`:                   true,
+		`/opt/R\&D\ dir/vaultmcp hook`:                   true,
+		`C:\Users\jo\bin\vaultmcp.exe hook`:              true,
+		`"C:\Users\Jo Smith\vaultmcp.exe" hook`:          true,
+		`"/opt/vaultmcp-hook scripts/audit.sh"`:          false,
+		"'/usr/local/bin/vaultmcp hook'":                 false,
+		"/usr/local/bin/vaultmcp; hook":                  false,
 		"/Users/jo/.local/bin/vaultmcp-hook":             true,
 		"/Users/me/gitrepos/vaultmcp/scripts/lint.sh":    false,
 		"python3 ~/.claude/hooks/vaultmcp-audit.py":      false,
@@ -345,6 +353,35 @@ func TestInstallKnowsItsOwnHookWithWordsAroundIt(t *testing.T) {
 		}
 		if got := hooks["PreToolUse"].([]any)[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)["command"]; got != cmd {
 			t.Errorf("%s: the command was changed to %v", cmd, got)
+		}
+	}
+}
+
+func TestShellWords(t *testing.T) {
+	for cmd, want := range map[string][]string{
+		"/bin/vaultmcp hook":                 {"/bin/vaultmcp", "hook"},
+		"  /bin/vaultmcp \t hook  ":          {"/bin/vaultmcp", "hook"},
+		"'/a b/vaultmcp' hook":               {"/a b/vaultmcp", "hook"},
+		`"/a \"b\"/vaultmcp" hook`:           {`/a "b"/vaultmcp`, "hook"},
+		`/a\ b/vaultmcp hook`:                {"/a b/vaultmcp", "hook"},
+		`C:\Users\jo\vaultmcp.exe hook`:      {`C:\Users\jo\vaultmcp.exe`, "hook"},
+		"/bin/vaultmcp hook>>/tmp/log":       {"/bin/vaultmcp", "hook", ">", ">", "/tmp/log"},
+		"X=1 /bin/vaultmcp hook 2>/dev/null": {"X=1", "/bin/vaultmcp", "hook", "2", ">", "/dev/null"},
+		"a && b":                             {"a", "&", "&", "b"},
+		"'' x":                               {"", "x"},
+		"'never closed":                      {"never closed"},
+		"":                                   nil,
+	} {
+		got := shellWords(cmd)
+		if len(got) != len(want) {
+			t.Errorf("shellWords(%q) = %q, want %q", cmd, got, want)
+			continue
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("shellWords(%q) = %q, want %q", cmd, got, want)
+				break
+			}
 		}
 	}
 }
