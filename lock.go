@@ -263,7 +263,7 @@ func offerKeychain(p vault.Paths, master []byte) error {
 		return nil
 	}
 	if err := keychainPut(master); err != nil {
-		return fmt.Errorf("the OS keychain refused the key, so nothing changed: %w", err)
+		return fmt.Errorf("the OS keychain refused the key, so the key is not in it: %w", err)
 	}
 	_ = audit.Log(p.Audit, "unlock", "MASTER", "cli", time.Now())
 	fmt.Println("  the key is now in the OS keychain as well.")
