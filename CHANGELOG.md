@@ -64,7 +64,8 @@ run at a terminal.
 **The hook says when it is not protecting you.** It used to stay silent
 whenever it could not reach the key. Now a vault you locked on purpose stops
 agent tool calls until you unlock it, and a key that is merely out of reach
-(or that does not open the vault) gets a warning in Claude and Codex.
+(or that does not open the vault) gets a warning in Claude. Codex is sent
+the same warning, but `codex exec` does not display it.
 
 **New commands**
 
@@ -174,6 +175,11 @@ captures are sealed with a key derived from it.
   of milliseconds. Run them one at a time.
 - Grok and Cursor give a hook no documented way to show a warning on a
   call it allows. When the key is out of reach there, the hook is silent.
+- Codex accepts the warning for a key that is out of reach, but
+  `codex exec` (0.162.1 and 0.169.0) does not display it. An interactive
+  Codex session is unconfirmed.
+- Codex skips a new or changed hook, with no message, until it is approved
+  in Codex `/hooks`.
 - The OS keychain holds one VaultMCP key per user, not one per vault
   folder.
 - "A person at the terminal" means stderr is a terminal. An agent's shell
