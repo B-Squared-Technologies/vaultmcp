@@ -158,6 +158,38 @@ func TestRealKeychain(t *testing.T) {
 	}
 	mustGet(t, v)
 
+	// The keychain is empty and VAULTMCP_KEY opens the vault, as on a machine
+	// that was set up with the variable. unlock offers the keychain: a typed
+	// no leaves it empty, a typed yes puts the key in it.
+	if err := keyring.DeleteFromKeychain(); err != nil {
+		t.Fatalf("deleting the entry: %v", err)
+	}
+	t.Setenv("VAULTMCP_KEY", pass)
+	types(t, "no")
+	if err := cmdUnlock(nil); err != nil {
+		t.Fatalf("unlock with the variable set, answering no: %v", err)
+	}
+	if osHasEntry(t) {
+		t.Fatal("the offer was answered no, and the real keychain has an entry all the same")
+	}
+	types(t, "y")
+	if err := cmdUnlock(nil); err != nil {
+		t.Fatalf("unlock with the variable set, answering yes: %v", err)
+	}
+	if !osHasEntry(t) || !bytes.Equal(keychainKey(t), key) {
+		t.Fatal("the offer was answered yes, and the real keychain does not hold the vault's key")
+	}
+
+	// A program that was not given the variable now reaches the key through
+	// the keychain, which is the point of the offer.
+	t.Setenv("VAULTMCP_KEY", "")
+	token = fakeToken(2)
+	out.Reset()
+	runHook(hookInput(token), &out, p, time.Now())
+	if !strings.Contains(out.String(), "[vault:") || strings.Contains(out.String(), token) {
+		t.Fatalf("after the offer, a hook without the variable did not hide the secret: %q", out.String())
+	}
+
 	// Leave the account as it was found.
 	if err := keyring.DeleteFromKeychain(); err != nil {
 		t.Fatalf("cleaning up: %v", err)
