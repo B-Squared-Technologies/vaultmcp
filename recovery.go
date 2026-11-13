@@ -151,16 +151,41 @@ func openRecovery(p vault.Paths, typed string) ([]byte, error) {
 }
 
 // opensStore reports whether master is this vault's key, as far as that can be
-// told: a store.enc that is there must open with it. The OS keychain holds one
+// told: a store.enc that is there must open with it (a store that cannot be
+// read at all is not taken as a yes). The OS keychain holds one
 // key per user, so the key a command was handed may belong to another vault
 // folder, and a command that then seals it, moves it or calls the vault open
 // would be acting on the wrong vault.
 func opensStore(p vault.Paths, master []byte) bool {
-	if !fileExists(p.Store) {
-		return true
-	}
 	_, err := vault.Load(p.Store, master)
 	return err == nil
+}
+
+// keepAside copies the key file at src to dst, which must not exist yet, and
+// has it on the disk before it returns: the caller is about to replace src,
+// and dst is then the only copy of whatever key src held.
+func keepAside(src, dst string) error {
+	// #nosec G304 -- src is the vault's own key.enc path, not user input.
+	blob, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	// #nosec G304 -- dst is that same path plus a timestamp.
+	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(blob)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(dst)
+	}
+	return err
 }
 
 // writeRecoveryNotice prints what a person has to know about a code they are
@@ -330,7 +355,7 @@ func restoreKey(p vault.Paths, master []byte) (where string, reachable bool, err
 		// A copy, not a move: key.enc stays where it is until the new one
 		// has been written and read back, so a failed write costs nothing.
 		aside := p.Key + ".before-recover-" + time.Now().Format("20060102-150405")
-		if err := copyStore(p.Key, aside); err != nil {
+		if err := keepAside(p.Key, aside); err != nil {
 			return "", false, fmt.Errorf("the old key.enc could not be copied aside, so nothing was changed: %w", err)
 		}
 		if err := writeKeyCopy(p.Key, master, pass); err != nil {
@@ -344,11 +369,9 @@ func restoreKey(p vault.Paths, master []byte) (where string, reachable bool, err
 	if env != "" {
 		return wrote + "the passphrase in VAULTMCP_KEY", true, nil
 	}
-	// With a keychain to hand and no key in it, finish the job: a person who
-	// just recovered wants the vault open, not one more prompt away.
-	if same {
-		return wrote + "that passphrase, and the vault is unlocked", true, nil
-	}
+	// With a keychain to hand, finish the job: a person who just recovered
+	// wants the vault open, not one more prompt away. The keychain is asked
+	// again here, not remembered from before the passphrase prompt.
 	if !keyring.Available() {
 		return wrote + "that passphrase", false, nil
 	}

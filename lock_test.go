@@ -980,3 +980,42 @@ func TestMessagesWhenTheKeyIsLost(t *testing.T) {
 		t.Fatalf("lock: err=%v out=%q", err, stdout)
 	}
 }
+
+// A store that cannot be read is not proof that a key is the right one.
+func TestAnUnreadableStoreIsNotAYes(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a file the owner cannot read")
+	}
+	v, code := keychainVault(t)
+	if err := os.Chmod(v.p.Store, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(v.p.Store, 0o600) })
+	if err := cmdRecoveryCode([]string{"--replace"}); err == nil {
+		t.Fatal("recovery-code sealed a key it could not check against the store")
+	}
+	if _, err := openRecovery(v.p, code); err != nil {
+		t.Fatal("the saved code was ended")
+	}
+}
+
+// The copy of the old key.enc is never written over an earlier copy.
+func TestKeepAsideNeverOverwrites(t *testing.T) {
+	dir := t.TempDir()
+	src, dst := filepath.Join(dir, "key.enc"), filepath.Join(dir, "key.enc.before")
+	if err := os.WriteFile(src, []byte("second"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, []byte("first"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := keepAside(src, dst); err == nil || string(mustRead(t, dst)) != "first" {
+		t.Fatalf("an earlier copy was written over: err = %v", err)
+	}
+	if err := os.Remove(dst); err != nil {
+		t.Fatal(err)
+	}
+	if err := keepAside(src, dst); err != nil || string(mustRead(t, dst)) != "second" {
+		t.Fatalf("keepAside: %v", err)
+	}
+}
