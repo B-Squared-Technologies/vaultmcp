@@ -195,3 +195,62 @@ func readHooks(t *testing.T, path string) map[string]any {
 	}
 	return hooks
 }
+
+// A matcher entry can group vaultmcp with a command that is not ours. Taking
+// vaultmcp out must leave the other command, and its matcher, where they are.
+func TestRemoveVaultHookKeepsOtherCommandsInTheSameEntry(t *testing.T) {
+	other := map[string]any{"type": "command", "command": "/usr/local/bin/lint-hook"}
+	ours := map[string]any{"type": "command", "command": "/bin/vaultmcp hook"}
+	hooks := map[string]any{"PostToolUse": []any{
+		map[string]any{"matcher": "Bash", "hooks": []any{other, ours}},
+		map[string]any{"matcher": ".*", "hooks": []any{ours}},
+		map[string]any{"matcher": "Write", "hooks": []any{other}},
+	}}
+	if !removeVaultHook(hooks, "PostToolUse") {
+		t.Fatal("nothing was removed")
+	}
+	list, _ := hooks["PostToolUse"].([]any)
+	if len(list) != 2 {
+		t.Fatalf("want the grouped entry and the unrelated entry, got %d: %v", len(list), list)
+	}
+	first, _ := list[0].(map[string]any)
+	inner, _ := first["hooks"].([]any)
+	if first["matcher"] != "Bash" || len(inner) != 1 {
+		t.Fatalf("the grouped entry lost its other command or its matcher: %v", first)
+	}
+	if cmd, _ := inner[0].(map[string]any)["command"].(string); cmd != "/usr/local/bin/lint-hook" {
+		t.Fatalf("the wrong command was kept: %v", inner)
+	}
+	if removeVaultHook(hooks, "PostToolUse") {
+		t.Fatal("a second run reported a removal")
+	}
+}
+
+// The same through the Codex writer, which removes a leftover PostToolUse hook.
+func TestCodexInstallKeepsAnotherHookGroupedWithOurs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hooks.json")
+	body := `{"hooks":{"PostToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"/usr/local/bin/lint-hook"},{"type":"command","command":"/bin/vaultmcp hook"}]}]}}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeClaudeStyleHooks(path, "/bin/vaultmcp hook"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Hooks map[string]json.RawMessage `json:"hooks"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	post := string(got.Hooks["PostToolUse"])
+	if !strings.Contains(post, "/usr/local/bin/lint-hook") || !strings.Contains(post, `"Bash"`) || strings.Contains(post, "vaultmcp") {
+		t.Fatalf("PostToolUse after install: %s", post)
+	}
+	if !strings.Contains(string(got.Hooks["PreToolUse"]), "/bin/vaultmcp hook") {
+		t.Fatalf("PreToolUse was not registered: %s", out)
+	}
+}

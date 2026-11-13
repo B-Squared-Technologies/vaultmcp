@@ -215,30 +215,32 @@ func ensureCursorHook(hooks map[string]any, event, command string) bool {
 	return true
 }
 
-// removeVaultHook drops matcher entries whose command references vaultmcp.
+// removeVaultHook takes the vaultmcp command out of event's matcher entries.
+// An entry can group several commands under one matcher; the others are not
+// ours and stay. An entry goes only when vaultmcp was all it held.
 func removeVaultHook(hooks map[string]any, event string) bool {
 	list, _ := hooks[event].([]any)
-	if len(list) == 0 {
-		return false
-	}
 	kept := make([]any, 0, len(list))
 	removed := false
 	for _, entry := range list {
 		m, _ := entry.(map[string]any)
 		inner, _ := m["hooks"].([]any)
-		drop := false
+		others := make([]any, 0, len(inner))
 		for _, h := range inner {
 			hm, _ := h.(map[string]any)
-			if cmd, _ := hm["command"].(string); strings.Contains(cmd, "vaultmcp") {
-				drop = true
-				break
+			if cmd, _ := hm["command"].(string); !strings.Contains(cmd, "vaultmcp") {
+				others = append(others, h)
 			}
 		}
-		if drop {
-			removed = true
+		if len(others) == len(inner) {
+			kept = append(kept, entry)
 			continue
 		}
-		kept = append(kept, entry)
+		removed = true
+		if len(others) > 0 {
+			m["hooks"] = others
+			kept = append(kept, entry)
+		}
 	}
 	if !removed {
 		return false

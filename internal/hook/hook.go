@@ -27,6 +27,7 @@ import (
 	"errors"
 	"os"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -215,7 +216,27 @@ func isShellTool(name string) bool {
 }
 
 func (d Deps) sub(alias string) string {
-	return "$(" + d.ExePath + " get " + alias + ")"
+	return "$(" + shellPath(d.ExePath, runtime.GOOS == "windows") + " get " + alias + ")"
+}
+
+// plainPath matches a path a shell reads as one word with nothing to expand.
+var plainPath = regexp.MustCompile(`^[A-Za-z0-9_./:-]+$`)
+
+// shellPath writes the binary's path so that the shell running the rewritten
+// command reads it back as that one path. A plain path goes in as it is, so
+// most commands look the way they always did. Anything else (a space in a
+// user's name is the common case) is single-quoted. On Windows the shell is
+// Git Bash, which takes a backslash as an escape and drops it, so backslashes
+// become forward slashes there; elsewhere a backslash is an ordinary character
+// of a file name and is kept, inside the quotes.
+func shellPath(p string, windows bool) string {
+	if windows {
+		p = strings.ReplaceAll(p, `\`, "/")
+	}
+	if plainPath.MatchString(p) {
+		return p
+	}
+	return "'" + strings.ReplaceAll(p, "'", `'\''`) + "'"
 }
 
 // known reports whether alias resolves: a named secret, or a capture file.
