@@ -198,12 +198,10 @@ func TestSubstitutionInPowerShell(t *testing.T) {
 		}
 		t.Skip("no PowerShell on this machine")
 	}
-	// The temp folder can come in its short form (RUNNER~1), which is not a
-	// plain path. The long form is.
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	// On the CI runner the temp folder comes in its short form (RUNNER~1).
+	// The tilde has to go into the command as it is: PowerShell has no
+	// backslash escape.
+	dir := t.TempDir()
 	run := func(exe string) string {
 		t.Helper()
 		// The argument is in single quotes only because PowerShell would

@@ -285,14 +285,21 @@ func isAssignment(word string) bool {
 // removed it when cleaning up. A NAME=value, env, exec or command in front,
 // and a redirect or another command behind, do not change whose hook it is.
 func isVaultHook(cmd string) bool {
-	words := shellWords(cmd)
+	return runsVaultHook(shellWords(cmd))
+}
+
+func isOperator(word string) bool {
+	return len(word) == 1 && strings.IndexByte("<>;&|", word[0]) >= 0
+}
+
+func runsVaultHook(words []string) bool {
 	start, file := true, false
 	for i, w := range words {
 		switch {
 		case w == "<" || w == ">":
 			file = true // the next word is a file name, not a program
 			continue
-		case w == ";" || w == "&" || w == "|":
+		case isOperator(w):
 			start, file = true, false
 			continue
 		case file:
@@ -312,17 +319,59 @@ func isVaultHook(cmd string) bool {
 			return true
 		}
 		if shells[name] {
-			for _, arg := range words[i+1:] {
-				if strings.IndexByte("<>;&|", arg[0]) >= 0 && len(arg) == 1 {
+			args := words[i+1:]
+			for j, a := range args {
+				if isOperator(a) {
+					args = args[:j]
 					break
 				}
-				if isVaultHook(arg) {
-					return true
-				}
+			}
+			if shellRunsVaultHook(name, args) {
+				return true
 			}
 		}
 	}
 	return false
+}
+
+// shellRunsVaultHook looks at what a shell was told to run. That is either
+// command text (after -c, /c or -Command), which is read as a command of its
+// own, or a script file, which is one word and is judged by its name. Words
+// after the script are the script's own and say nothing.
+func shellRunsVaultHook(shell string, args []string) bool {
+	for j, a := range args {
+		low := strings.ToLower(a)
+		switch {
+		case shell == "cmd":
+			if low == "/c" || low == "/k" {
+				return textRunsVaultHook(args[j+1:])
+			}
+			if !strings.HasPrefix(a, "/") {
+				return false
+			}
+		case shell == "pwsh" || shell == "powershell":
+			if low == "-file" || low == "-f" {
+				return j+1 < len(args) && programName(args[j+1]) == "vaultmcp-hook"
+			}
+			if low == "-command" || low == "-c" {
+				return textRunsVaultHook(args[j+1:])
+			}
+		case strings.HasPrefix(a, "--"):
+		case strings.HasPrefix(a, "-"):
+			if strings.Contains(a, "c") {
+				return textRunsVaultHook(args[j+1:])
+			}
+		default:
+			return programName(a) == "vaultmcp-hook"
+		}
+	}
+	return false
+}
+
+// textRunsVaultHook reads command text handed to a shell: one quoted word that
+// holds a whole command, or the rest of the line.
+func textRunsVaultHook(rest []string) bool {
+	return len(rest) > 0 && (isVaultHook(rest[0]) || runsVaultHook(rest))
 }
 
 // shellWords splits a command into words as a shell would: on blanks that are

@@ -285,37 +285,47 @@ func TestIsVaultHook(t *testing.T) {
 		"C:/tools/vaultmcp-hook.exe":                       true,
 		"env VAULTMCP_DIR=/x /usr/local/bin/vaultmcp hook": true,
 		"true && /usr/local/bin/vaultmcp hook":             true,
-		"bash -c 'make -C /src/vaultmcp hook'":             false,
-		"'/Users/jo smith/bin/vaultmcp' hook":              true,
-		"VAULTMCP_DIR=/x/y /usr/local/bin/vaultmcp hook":   true,
-		"/usr/local/bin/vaultmcp hook 2>>/tmp/hook.log":    true,
-		"/usr/local/bin/vaultmcp hook>>/tmp/hook.log":      true,
-		"/usr/local/bin/vaultmcp hook; true":               true,
-		"/Users/jo/.local/bin/vaultmcp-hook>>/tmp/h.log":   true,
-		"/usr/local/bin/vaultmcp hooks":                    false,
-		"'/opt/R&D/vaultmcp' hook":                         true,
-		`/opt/R\&D/vaultmcp hook`:                          true,
-		"'/opt/R&D dir/vaultmcp' hook":                     true,
-		"'/opt/a b/R&D/vaultmcp' hook":                     true,
-		`"/opt/a b/R&D/vaultmcp" hook`:                     true,
-		`/opt/R\&D\ dir/vaultmcp hook`:                     true,
-		`C:\Users\jo\bin\vaultmcp.exe hook`:                true,
-		`"C:\Users\Jo Smith\vaultmcp.exe" hook`:            true,
-		`"/opt/vaultmcp-hook scripts/audit.sh"`:            false,
-		"'/usr/local/bin/vaultmcp hook'":                   false,
-		"/usr/local/bin/vaultmcp; hook":                    false,
-		"/usr/local/bin/vaultmcp-darwin-arm64 hook":        true,
-		"C:/tools/vaultmcp-windows-amd64.exe hook":         true,
-		"/usr/local/bin/vaultmcp-darwin-arm64 status":      false,
-		"/usr/local/bin/myvaultmcp hook":                   false,
-		"/Users/jo/.local/bin/vaultmcp-hook":               true,
-		"/Users/me/gitrepos/vaultmcp/scripts/lint.sh":      false,
-		"python3 ~/.claude/hooks/vaultmcp-audit.py":        false,
-		"node ~/work/vaultmcp-tools/check.js":              false,
-		"cd vaultmcp && make hook":                         false,
-		"/usr/local/bin/vaultmcp status":                   false,
-		"/usr/local/bin/lint-hook":                         false,
-		"":                                                 false,
+		// A script is one word, judged by its name. What follows it is its own.
+		"bash /opt/audit.sh /tmp/vaultmcp-hook":                         false,
+		`bash "/Users/Jo Smith/.claude/hooks/vaultmcp-hook.sh"`:         true,
+		"pwsh -ExecutionPolicy Bypass -File C:/tools/vaultmcp-hook.ps1": true,
+		`cmd /c C:\tools\vaultmcp.exe hook`:                             true,
+		"bash -c 'true' vaultmcp-hook":                                  false,
+		// Empty words, which a shell allows.
+		"bash -c ''":                                     false,
+		`cmd /c start "" C:/x.exe`:                       false,
+		`sh ""`:                                          false,
+		"bash -c 'make -C /src/vaultmcp hook'":           false,
+		"'/Users/jo smith/bin/vaultmcp' hook":            true,
+		"VAULTMCP_DIR=/x/y /usr/local/bin/vaultmcp hook": true,
+		"/usr/local/bin/vaultmcp hook 2>>/tmp/hook.log":  true,
+		"/usr/local/bin/vaultmcp hook>>/tmp/hook.log":    true,
+		"/usr/local/bin/vaultmcp hook; true":             true,
+		"/Users/jo/.local/bin/vaultmcp-hook>>/tmp/h.log": true,
+		"/usr/local/bin/vaultmcp hooks":                  false,
+		"'/opt/R&D/vaultmcp' hook":                       true,
+		`/opt/R\&D/vaultmcp hook`:                        true,
+		"'/opt/R&D dir/vaultmcp' hook":                   true,
+		"'/opt/a b/R&D/vaultmcp' hook":                   true,
+		`"/opt/a b/R&D/vaultmcp" hook`:                   true,
+		`/opt/R\&D\ dir/vaultmcp hook`:                   true,
+		`C:\Users\jo\bin\vaultmcp.exe hook`:              true,
+		`"C:\Users\Jo Smith\vaultmcp.exe" hook`:          true,
+		`"/opt/vaultmcp-hook scripts/audit.sh"`:          false,
+		"'/usr/local/bin/vaultmcp hook'":                 false,
+		"/usr/local/bin/vaultmcp; hook":                  false,
+		"/usr/local/bin/vaultmcp-darwin-arm64 hook":      true,
+		"C:/tools/vaultmcp-windows-amd64.exe hook":       true,
+		"/usr/local/bin/vaultmcp-darwin-arm64 status":    false,
+		"/usr/local/bin/myvaultmcp hook":                 false,
+		"/Users/jo/.local/bin/vaultmcp-hook":             true,
+		"/Users/me/gitrepos/vaultmcp/scripts/lint.sh":    false,
+		"python3 ~/.claude/hooks/vaultmcp-audit.py":      false,
+		"node ~/work/vaultmcp-tools/check.js":            false,
+		"cd vaultmcp && make hook":                       false,
+		"/usr/local/bin/vaultmcp status":                 false,
+		"/usr/local/bin/lint-hook":                       false,
+		"":                                               false,
 	} {
 		if got := isVaultHook(cmd); got != want {
 			t.Errorf("isVaultHook(%q) = %v, want %v", cmd, got, want)
@@ -532,4 +542,33 @@ func TestRemoveVaultHookKnowsTheExactCommand(t *testing.T) {
 	if _, ok := hooks["PostToolUse"]; ok {
 		t.Fatalf("still there: %v", hooks)
 	}
+}
+
+// The commands read here were written by other tools and by people. None of
+// them may crash install.
+func FuzzIsVaultHook(f *testing.F) {
+	for _, seed := range []string{
+		"", "bash -c ''", `cmd /c start "" C:/x.exe`, `sh ""`, "'", `"`, `\`, "a ; | & < >",
+		"/usr/local/bin/vaultmcp hook", "zsh -lic '/usr/local/bin/vaultmcp hook'", `"C:/Users/Jo Smith/vaultmcp.exe" hook`,
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, cmd string) {
+		_ = isVaultHook(cmd)
+	})
+}
+
+// Whatever folder the binary is in, install knows the command it wrote. The
+// path is absolute, as os.Executable gives it: a relative one could begin
+// with NAME=, which a shell reads as a variable being set.
+func FuzzHookCommandIsKnown(f *testing.F) {
+	for _, seed := range []string{"usr/local/bin", "Users/Jo Smith/bin", "opt/R&D", "Users/o'neil", "opt/a$b/c`d/e\"f/g\\h", "two\nlines", "tmp/x y;z|w<v>u", "A="} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, dir string) {
+		cmd := hookCommand("/" + dir + "/vaultmcp")
+		if !isVaultHook(cmd) {
+			t.Errorf("install would not know its own command: %q", cmd)
+		}
+	})
 }
