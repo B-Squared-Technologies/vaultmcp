@@ -93,6 +93,24 @@ agent tool calls until you unlock it, and a key that is merely out of reach
   a mistyped `--dry-run` ran as a real prune.
 - `vaultmcp status` counts named secrets and captures separately, and says
   whether captures are locked to this machine.
+- `vaultmcp install` no longer removes another tool's hook when that hook
+  shares a matcher entry with vaultmcp's.
+- `vaultmcp install` no longer takes a hook for its own because its path
+  has `vaultmcp` in it somewhere. Before, such a hook made install skip its
+  own registration, and could be removed. A hook is ours when the program it
+  runs is vaultmcp with the argument `hook`, or a script named
+  `vaultmcp-hook`, also when a shell is handed one of those.
+- `vaultmcp install` puts the binary's path in double quotes when it has a
+  space or another special character in it, so the hook command runs in sh
+  and in Git Bash. A plain path is registered exactly as before. A bare
+  registration that an earlier version made for such a path never ran:
+  `install` now replaces it with the quoted one.
+- A binary path with a space or another special character in it now works
+  in the commands the hook rewrites, when bash runs them (Git Bash on
+  Windows, where backslashes are also handled). In PowerShell a plain path
+  works. A path with a space or special character does not: the
+  substitution fails there and the command gets an empty value in place of
+  the secret.
 
 ### Upgrading
 
@@ -108,6 +126,21 @@ captures are sealed with a key derived from it.
 
 ### Known limits
 
+- A binary path with an apostrophe in it still breaks a rewritten command
+  when the secret sat inside single quotes: the shell reports a syntax
+  error and the command does not run. Nothing is exposed.
+- A hook command with a quoted path (a binary under a path with a space)
+  does not run where a tool hands hook commands to PowerShell. cmd.exe is
+  not tested.
+- `install` knows vaultmcp's hook in its plain forms, behind `env`, and
+  handed to a shell with `-c`. A hook wrapped some other way (inside an
+  `if`, a subshell, a wrapper program) is not known, and `install` adds its
+  own registration beside it, so the hook runs twice. Take one out by hand.
+- Inside backticks, a binary path with `$`, a backtick or a backslash in it
+  is not escaped correctly. Use `$( )` in such a command.
+- An app that was not started from a terminal does not get a
+  `VAULTMCP_KEY` set in a shell profile. Put the key in the OS keychain for
+  such apps: see "Limits" in the README.
 - A placeholder that sits in a file for 30 days without an agent using it
   stops resolving. Reading the file does not count as use.
 - If two hooks repair the same damaged capture file in the same moment and
@@ -131,5 +164,3 @@ captures are sealed with a key derived from it.
 - A new recovery code does not shut out someone who already holds the old
   code together with an old copy of the vault folder: the key itself never
   changes.
-- On Windows, a binary path with backslashes or spaces still breaks the
-  shell rewrite. That fix is next.
