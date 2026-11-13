@@ -1389,7 +1389,8 @@ func TestUnlockSaysWhereTheOfferCanBeMade(t *testing.T) {
 // and says that it did.
 func TestUnlockWithTheVariableSaysItEndedALock(t *testing.T) {
 	v := envVault(t)
-	terminal(t, false)
+	terminal(t, true)
+	types(t, "n")
 	if err := writeLockMarker(v.p); err != nil {
 		t.Fatal(err)
 	}
@@ -1409,7 +1410,8 @@ func TestUnlockWithTheVariableSaysItEndedALock(t *testing.T) {
 // The marker cannot be removed. unlock must not say the lock is ended.
 func TestUnlockWithTheVariableReportsAMarkerItCouldNotRemove(t *testing.T) {
 	v := envVault(t)
-	terminal(t, false)
+	terminal(t, true)
+	types(t)
 	// A folder with something in it, where the marker file would be.
 	if err := os.MkdirAll(filepath.Join(v.p.Locked, "x"), 0o700); err != nil {
 		t.Fatal(err)
@@ -1421,5 +1423,56 @@ func TestUnlockWithTheVariableReportsAMarkerItCouldNotRemove(t *testing.T) {
 	}
 	if strings.Contains(stdout, "the lock is ended") {
 		t.Fatalf("stdout = %q", stdout)
+	}
+}
+
+// Ending a lock takes a person. A program that holds VAULTMCP_KEY, an agent
+// started from a terminal for one, runs unlock with nobody there: the marker
+// stays, and the programs the owner stopped stay stopped.
+func TestUnlockWithTheVariableNeedsAPersonToEndALock(t *testing.T) {
+	const pass = "a passphrase for tests"
+	for name, person := range map[string]func(t *testing.T){
+		"no terminal at all": func(t *testing.T) { terminal(t, false) },
+		"the answer is piped in": func(t *testing.T) {
+			terminal(t, true) // stderr is a terminal, stdin is not
+			prev := stdinIsTerminal
+			stdinIsTerminal = func() bool { return false }
+			t.Cleanup(func() { stdinIsTerminal = prev })
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			v := envVault(t)
+			person(t)
+			if err := writeLockMarker(v.p); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			output(t, func() { err = cmdUnlock(nil) })
+			if err == nil || !strings.Contains(err.Error(), "takes a person") {
+				t.Fatalf("err = %v, want a refusal", err)
+			}
+			if !fileExists(v.p.Locked) {
+				t.Fatal("the lock was ended with nobody there")
+			}
+			if _, ok := keyring.FromKeychain(); ok {
+				t.Fatal("a key went into the keychain")
+			}
+			t.Setenv("VAULTMCP_KEY", "")
+			if got := hookSays(t, v.p, claudeEvent, testNow); !strings.Contains(got, `"permissionDecision":"deny"`) {
+				t.Fatalf("a program without the variable is no longer stopped: %q", got)
+			}
+			t.Setenv("VAULTMCP_KEY", pass)
+		})
+	}
+}
+
+// With no lock to end, unlock run by a script is still not an error.
+func TestUnlockWithTheVariableAndNoLockIsNotAnError(t *testing.T) {
+	envVault(t)
+	terminal(t, false)
+	var err error
+	output(t, func() { err = cmdUnlock(nil) })
+	if err != nil {
+		t.Fatalf("err = %v", err)
 	}
 }

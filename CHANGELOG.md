@@ -57,8 +57,9 @@ Existing vaults: run `vaultmcp recovery-code` and save what it prints.
 keychain and leaves it in `key.enc` behind a passphrase, and `unlock` puts
 it back. The key is never deleted. Before, `unlock` stored nothing and
 `lock` only deleted. `lock` asks for the passphrase at a prompt on every
-path, so a script or an agent cannot lock a vault. `unlock` needs the
-passphrase too, typed or in `VAULTMCP_KEY`.
+path, so a script or an agent cannot lock a vault. Ending a lock needs a
+person too: `unlock` asks for the passphrase, or, where `VAULTMCP_KEY` is
+set, has to be run at a terminal.
 
 **The hook says when it is not protecting you.** It used to stay silent
 whenever it could not reach the key. Now a vault you locked on purpose stops
@@ -90,9 +91,13 @@ agent tool calls until you unlock it, and a key that is merely out of reach
 - The warning for a key that is out of reach now names the fix: run
   `vaultmcp unlock` in a terminal, or `vaultmcp recover` when there is no
   `key.enc` for a passphrase to open.
-- Run where `VAULTMCP_KEY` is set, `vaultmcp unlock` says so when it ended
-  a lock that was left for other programs, and says where to run it when
-  nobody is at a terminal to be asked about the keychain.
+- Run where `VAULTMCP_KEY` is set, `vaultmcp unlock` ends a lock that was
+  left for other programs only at a terminal, and says that it did. Run by
+  a script or an agent it refuses, and the lock stays. With no lock, it
+  says where to run it to be asked about the keychain.
+- A lock never stops a program that has `VAULTMCP_KEY`: that program holds
+  a working key. To have `vaultmcp lock` stop every agent on a machine,
+  keep the key in the OS keychain there and do not set the variable.
 - While a vault is locked with `vaultmcp lock`, the hook stops agent tool
   calls. In every other case it still never blocks.
 - The first `vaultmcp set` prints a recovery code on stderr when a person is
