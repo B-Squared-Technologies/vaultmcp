@@ -116,6 +116,9 @@ captures are sealed with a key derived from it.
 
 ### Known limits
 
+- A binary path with an apostrophe in it still breaks a rewritten command
+  when the secret sat inside single quotes: the shell reports a syntax
+  error and the command does not run. Nothing is exposed.
 - `install` registers the binary's path without quotes, so a space in that
   path is expected to break the hook command itself. Not tested.
 - An app that was not started from a terminal does not get a
