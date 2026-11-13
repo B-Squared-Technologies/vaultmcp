@@ -98,6 +98,29 @@ func cmdLock(args []string) error {
 	return nil
 }
 
+// errWrongKeyFile is for a key.enc that opens but holds a key store.enc was
+// not sealed with: the file an earlier version left behind when VAULTMCP_KEY
+// was set on a keychain vault. Calling such a vault unlocked would end a lock
+// while the hook still cannot hide anything.
+func errWrongKeyFile(p vault.Paths) error {
+	return fmt.Errorf("key.enc opened, but the key in it does not open store.enc in %s, so nothing was changed. If you have the recovery code, run 'vaultmcp recover'", p.Dir)
+}
+
+// keychainPut stores master in the OS keychain unless another key is there.
+// The entry is read again here, at the last moment: the caller looked before
+// it asked for a passphrase, and in the time a person takes to type one,
+// another vault folder's command may have put its own key there. The entry is
+// one per user, and that key may have no other copy.
+func keychainPut(master []byte) error {
+	if now, ok := keyring.FromKeychain(); ok {
+		if subtle.ConstantTimeCompare(now, master) == 1 {
+			return nil
+		}
+		return errors.New("the OS keychain now holds a different key, most likely another vault folder's, and it was left alone")
+	}
+	return keyring.ToKeychain(master)
+}
+
 func writeLockMarker(p vault.Paths) error {
 	return os.WriteFile(p.Locked, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o600)
 }
@@ -111,8 +134,12 @@ func cmdUnlock(args []string) error {
 		if !fileExists(p.Key) {
 			return errors.New("VAULTMCP_KEY is set, but there is no key.enc for it to open")
 		}
-		if _, err := keyring.UnwrapFromFile(p.Key, env); err != nil {
+		inFile, err := keyring.UnwrapFromFile(p.Key, env)
+		if err != nil {
 			return errors.New("VAULTMCP_KEY is set, but it does not open key.enc: wrong passphrase or tampered key file")
+		}
+		if !opensStore(p, inFile) {
+			return errWrongKeyFile(p)
 		}
 		_ = os.Remove(p.Locked)
 		fmt.Println("  nothing to unlock: VAULTMCP_KEY is set and opens this vault, so it is never locked")
@@ -140,6 +167,9 @@ func cmdUnlock(args []string) error {
 	if err != nil {
 		return errors.New("wrong passphrase or tampered key file")
 	}
+	if !opensStore(p, master) {
+		return errWrongKeyFile(p)
+	}
 	if !keyring.Available() {
 		// The passphrase proved who is asking, so a lock set on purpose is
 		// over, but there is nowhere to keep the vault open.
@@ -149,7 +179,7 @@ func cmdUnlock(args []string) error {
 		fmt.Println("  Agent tool calls are no longer stopped, and the hook cannot hide secrets from them until it can reach the key.")
 		return nil
 	}
-	if err := keyring.ToKeychain(master); err != nil {
+	if err := keychainPut(master); err != nil {
 		return fmt.Errorf("the passphrase is right, but the OS keychain refused the key, so the vault is still locked: %w", err)
 	}
 	_ = os.Remove(p.Locked)

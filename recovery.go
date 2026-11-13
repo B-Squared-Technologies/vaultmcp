@@ -295,7 +295,7 @@ func restoreKey(p vault.Paths, master []byte) (where string, reachable bool, err
 		if same {
 			return "the key was already in the OS keychain, nothing had to change", true, nil
 		}
-		if err := keyring.ToKeychain(master); err != nil {
+		if err := keychainPut(master); err != nil {
 			return "", false, fmt.Errorf("the OS keychain refused the key (%w). To recover with a passphrase instead, set VAULTMCP_KEY to the passphrase you want and run 'vaultmcp recover' again", err)
 		}
 		return "the key is back in the OS keychain", true, nil
@@ -338,7 +338,7 @@ func restoreKey(p vault.Paths, master []byte) (where string, reachable bool, err
 	if !keyring.Available() {
 		return wrote + "that passphrase", false, nil
 	}
-	if err := keyring.ToKeychain(master); err != nil {
+	if err := keychainPut(master); err != nil {
 		fmt.Fprintf(os.Stderr, "  warning: the OS keychain refused the key (%v)\n", err)
 		return wrote + "that passphrase", false, nil
 	}

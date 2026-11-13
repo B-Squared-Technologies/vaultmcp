@@ -819,3 +819,50 @@ func TestRecoverKeepsTheLockWhenTheKeyStaysOutOfReach(t *testing.T) {
 		t.Fatalf("the hook let a call through after a recover that could not unlock: %s", got)
 	}
 }
+
+// A key.enc that opens but holds a key the store was not sealed with must not
+// end a lock: the hook could hide nothing with it.
+func TestUnlockRefusesAKeyFileThatDoesNotOpenTheStore(t *testing.T) {
+	for _, mode := range []string{"passphrase typed", "VAULTMCP_KEY"} {
+		t.Run(mode, func(t *testing.T) {
+			v, _ := keychainVault(t)
+			answers(t, "a passphrase for the lock")
+			if err := cmdLock(nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := keyring.WrapToFile(v.p.Key, crypto.NewKey(), "a passphrase for the lock"); err != nil {
+				t.Fatal(err)
+			}
+			if mode == "VAULTMCP_KEY" {
+				t.Setenv("VAULTMCP_KEY", "a passphrase for the lock")
+			} else {
+				answers(t, "a passphrase for the lock")
+			}
+			if err := cmdUnlock(nil); err == nil || !strings.Contains(err.Error(), "does not open store.enc") {
+				t.Fatalf("err = %v, want a refusal", err)
+			}
+			if _, ok := keyring.FromKeychain(); ok || !fileExists(v.p.Locked) {
+				t.Fatal("a refused unlock put a key in the keychain or ended the lock")
+			}
+		})
+	}
+}
+
+// The keychain is looked at again at the moment of writing, so a key another
+// vault folder put there in the meantime is not written over.
+func TestKeychainPutLeavesAnotherKeyAlone(t *testing.T) {
+	useMockKeychain(t)
+	mine, other := crypto.NewKey(), crypto.NewKey()
+	if err := keychainPut(mine); err != nil || !bytes.Equal(keychainKey(t), mine) {
+		t.Fatalf("an empty keychain did not take the key: %v", err)
+	}
+	if err := keychainPut(mine); err != nil {
+		t.Fatalf("the same key again: %v", err)
+	}
+	if err := keyring.ToKeychain(other); err != nil {
+		t.Fatal(err)
+	}
+	if err := keychainPut(mine); err == nil || !bytes.Equal(keychainKey(t), other) {
+		t.Fatalf("another key was written over: err = %v", err)
+	}
+}
