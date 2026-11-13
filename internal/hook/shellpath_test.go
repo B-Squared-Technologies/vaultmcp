@@ -203,7 +203,9 @@ func TestSubstitutionInPowerShell(t *testing.T) {
 	}
 	run := func(exe string) string {
 		t.Helper()
-		sub := "$(" + shellPath(exe, true) + " -test.run=TestHelperProcess)"
+		// The argument is in single quotes only because PowerShell would
+		// split this test flag at its dot. "get NAME" has no such trouble.
+		sub := "$(" + shellPath(exe, true) + " '-test.run=TestHelperProcess')"
 		cmd := exec.Command(ps, "-NoProfile", "-NonInteractive", "-Command", "Write-Output "+sub)
 		cmd.Env = append(os.Environ(), "VAULTMCP_TEST_HELPER=1")
 		out, _ := cmd.CombinedOutput()
