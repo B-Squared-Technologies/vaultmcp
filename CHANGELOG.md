@@ -97,12 +97,18 @@ agent tool calls until you unlock it, and a key that is merely out of reach
   shares a matcher entry with vaultmcp's.
 - `vaultmcp install` no longer takes a hook for its own because its path
   has `vaultmcp` in it somewhere. Before, such a hook made install skip its
-  own registration, and could be removed.
+  own registration, and could be removed. A hook is ours when the program it
+  runs is vaultmcp with the argument `hook`, or a script named
+  `vaultmcp-hook`, also when a shell is handed one of those.
+- `vaultmcp install` puts the binary's path in double quotes when it has a
+  space or another special character in it, so the hook command runs in sh
+  and in Git Bash. A plain path is registered exactly as before.
 - A binary path with a space or another special character in it now works
   in the commands the hook rewrites, when bash runs them (Git Bash on
   Windows, where backslashes are also handled). In PowerShell a plain path
-  works. A path with a space or special character does not: the command
-  fails there and the secret is not put in.
+  works. A path with a space or special character does not: the
+  substitution fails there and the command gets an empty value in place of
+  the secret.
 
 ### Upgrading
 
@@ -121,8 +127,14 @@ captures are sealed with a key derived from it.
 - A binary path with an apostrophe in it still breaks a rewritten command
   when the secret sat inside single quotes: the shell reports a syntax
   error and the command does not run. Nothing is exposed.
-- `install` registers the binary's path without quotes, so a space in that
-  path is expected to break the hook command itself. Not tested.
+- A hook command with a quoted path (a binary under a path with a space)
+  does not run where a tool hands hook commands to PowerShell. cmd.exe is
+  not tested.
+- A hook registered by an earlier version for a path with a space never
+  ran. `install` leaves it in place and adds a working one beside it: take
+  the old line out by hand.
+- Inside backticks, a binary path with `$`, a backtick or a backslash in it
+  is not escaped correctly. Use `$( )` in such a command.
 - An app that was not started from a terminal does not get a
   `VAULTMCP_KEY` set in a shell profile. Put the key in the OS keychain for
   such apps: see "Limits" in the README.
@@ -149,5 +161,3 @@ captures are sealed with a key derived from it.
 - A new recovery code does not shut out someone who already holds the old
   code together with an old copy of the vault folder: the key itself never
   changes.
-- On Windows, a binary path with backslashes or spaces still breaks the
-  shell rewrite. That fix is next.

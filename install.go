@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/B-Squared-Technologies/vaultmcp/internal/hook"
 )
 
 // settingsPath returns the Claude Code settings file to register hooks in.
@@ -47,7 +49,7 @@ func cmdInstall(args []string) error {
 		return err
 	}
 	exe = filepath.ToSlash(exe)
-	command := exe + " hook"
+	command := hookCommand(exe)
 
 	sp, err := settingsPath(global)
 	if err != nil {
@@ -131,7 +133,7 @@ func writeClaudeStyleHooks(path, command string) error {
 	if ensureHook(hooks, "PreToolUse", command) {
 		added++
 	}
-	if removeVaultHook(hooks, "PostToolUse") {
+	if removeVaultHook(hooks, "PostToolUse", command) {
 		added++
 	}
 	settings["hooks"] = hooks
@@ -215,30 +217,109 @@ func ensureCursorHook(hooks map[string]any, event, command string) bool {
 	return true
 }
 
-// isVaultHook reports whether a registered hook command is vaultmcp's own: it
-// runs a program whose name starts with vaultmcp (the release binaries are
-// named vaultmcp-<os>-<arch>) with the argument "hook", or a script named
-// vaultmcp-hook that some setups put in front of the binary. Words around it
-// (a VAULTMCP_DIR=... in front, a redirect behind) do not change that.
+// hookCommand is the command line registered with each tool: the binary's
+// path and the word hook.
+func hookCommand(exe string) string {
+	return hookProgram(exe) + " hook"
+}
+
+// hookProgram writes the binary's path as one word of a command. A plain path
+// goes in as it is, so a registration made by an earlier version stays the
+// same text. A path with a space or another character a shell would act on
+// goes in double quotes, which sh and bash (Git Bash on Windows) read as one
+// word. PowerShell does not run a quoted path written this way.
+func hookProgram(exe string) string {
+	if hook.PlainPath(exe) {
+		return exe
+	}
+	var b strings.Builder
+	b.WriteByte('"')
+	for i := 0; i < len(exe); i++ {
+		if strings.IndexByte("\"\\$`", exe[i]) >= 0 {
+			b.WriteByte('\\')
+		}
+		b.WriteByte(exe[i])
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+// shells are programs that run the command line or the script they are given.
+var shells = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true, "cmd": true, "pwsh": true, "powershell": true}
+
+// programName is the name a command word runs under: no folder, lower case,
+// and without the endings a program or a script file carries.
+func programName(word string) string {
+	name := strings.ToLower(word[strings.LastIndexAny(word, `/\`)+1:])
+	for _, ext := range []string{".exe", ".cmd", ".bat", ".ps1", ".sh"} {
+		name = strings.TrimSuffix(name, ext)
+	}
+	return name
+}
+
+// isAssignment reports whether a word is a NAME=value in front of a command.
+func isAssignment(word string) bool {
+	eq := strings.IndexByte(word, '=')
+	if eq < 1 {
+		return false
+	}
+	for i := 0; i < eq; i++ {
+		c := word[i]
+		if c != '_' && (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && (i == 0 || c < '0' || c > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// isVaultHook reports whether a registered hook command is vaultmcp's own.
+// It is ours when the program it runs has a name that starts with vaultmcp
+// (the release binaries are named vaultmcp-<os>-<arch>) and is given the
+// argument "hook", or is a script named vaultmcp-hook that some setups put in
+// front of the binary. A shell handed such a command or script (zsh -c '...',
+// bash some/vaultmcp-hook.sh) counts too.
 //
-// A command that only has "vaultmcp" somewhere in a path is somebody else's
-// hook. Taking it for ours meant install skipped its own registration because
-// of it, and removed it when cleaning up.
-//
-// The command is split the way a shell splits it into words, so a path with a
-// space or an ampersand inside quotes stays one word. It is not run through a
-// shell's grammar beyond that: a command that merely prints the words
-// "vaultmcp hook" would still pass for ours.
+// Only the program counts, not a word further along. "make -C src/vaultmcp
+// hook" and "lint > /tmp/vaultmcp-hook" are somebody else's hooks: taking one
+// for ours meant install skipped its own registration because of it, and
+// removed it when cleaning up. A NAME=value, env, exec or command in front,
+// and a redirect or another command behind, do not change whose hook it is.
 func isVaultHook(cmd string) bool {
 	words := shellWords(cmd)
+	start, file := true, false
 	for i, w := range words {
-		name := strings.ToLower(w[strings.LastIndexAny(w, `/\`)+1:])
-		name = strings.TrimSuffix(name, ".exe")
+		switch {
+		case w == "<" || w == ">":
+			file = true // the next word is a file name, not a program
+			continue
+		case w == ";" || w == "&" || w == "|":
+			start, file = true, false
+			continue
+		case file:
+			file = false
+			continue
+		case !start:
+			continue
+		case isAssignment(w) || w == "env" || w == "exec" || w == "command":
+			continue
+		}
+		start = false
+		name := programName(w)
 		if name == "vaultmcp-hook" {
 			return true
 		}
 		if strings.HasPrefix(name, "vaultmcp") && i+1 < len(words) && words[i+1] == "hook" {
 			return true
+		}
+		if shells[name] {
+			for _, arg := range words[i+1:] {
+				if strings.IndexByte("<>;&|", arg[0]) >= 0 && len(arg) == 1 {
+					break
+				}
+				if isVaultHook(arg) {
+					return true
+				}
+			}
 		}
 	}
 	return false
@@ -276,7 +357,7 @@ func shellWords(cmd string) []string {
 			switch {
 			case c == '"':
 				quote = 0
-			case c == '\\' && i+1 < len(cmd) && strings.IndexByte(`"\`, cmd[i+1]) >= 0:
+			case c == '\\' && i+1 < len(cmd) && strings.IndexByte("\"\\$`", cmd[i+1]) >= 0:
 				i++
 				cur.WriteByte(cmd[i])
 			default:
@@ -306,7 +387,7 @@ func shellWords(cmd string) []string {
 // removeVaultHook takes the vaultmcp command out of event's matcher entries.
 // An entry can group several commands under one matcher; the others are not
 // ours and stay. An entry goes only when vaultmcp was all it held.
-func removeVaultHook(hooks map[string]any, event string) bool {
+func removeVaultHook(hooks map[string]any, event, command string) bool {
 	list, _ := hooks[event].([]any)
 	kept := make([]any, 0, len(list))
 	removed := false
@@ -316,7 +397,7 @@ func removeVaultHook(hooks map[string]any, event string) bool {
 		others := make([]any, 0, len(inner))
 		for _, h := range inner {
 			hm, _ := h.(map[string]any)
-			if cmd, _ := hm["command"].(string); !isVaultHook(cmd) {
+			if cmd, _ := hm["command"].(string); cmd != command && !isVaultHook(cmd) {
 				others = append(others, h)
 			}
 		}

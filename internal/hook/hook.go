@@ -235,7 +235,18 @@ func plainPathByte(c byte) bool {
 	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
 		return true
 	}
-	return strings.IndexByte("_./:-", c) >= 0
+	return strings.IndexByte("_./:-~+=@%", c) >= 0
+}
+
+// PlainPath reports whether a path has nothing in it that a shell would act
+// on, so it can be written into a command as it is.
+func PlainPath(p string) bool {
+	for i := 0; i < len(p); i++ {
+		if c := p[i]; c < 0x80 && !plainPathByte(c) {
+			return false
+		}
+	}
+	return true
 }
 
 // shellPath writes a path so that the shell running the command it is put

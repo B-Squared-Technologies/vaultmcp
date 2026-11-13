@@ -23,6 +23,9 @@ func TestShellPath(t *testing.T) {
 		{"a dollar", "/opt/$HOME/vaultmcp", false, `/opt/\$HOME/vaultmcp`},
 		{"an ampersand", "/opt/R&D/vaultmcp", false, `/opt/R\&D/vaultmcp`},
 		{"not ASCII", "/Users/zoë/vaultmcp", false, "/Users/zoë/vaultmcp"},
+		// Plain in the middle of a word, and PowerShell has no backslash
+		// escape: a Windows short name (RUNNER~1) has to stay as it is.
+		{"a short name and friends", "C:/Users/RUNNER~1/a+b=c@d%e/vaultmcp.exe", true, "C:/Users/RUNNER~1/a+b=c@d%e/vaultmcp.exe"},
 		{"a newline", "/opt/a\nb/vaultmcp", false, "/opt/a\"\n\"b/vaultmcp"},
 		{"windows", `C:\Users\jo\bin\vaultmcp.exe`, true, "C:/Users/jo/bin/vaultmcp.exe"},
 		{"windows, a space", `C:\Users\Jo Smith\vaultmcp.exe`, true, `C:/Users/Jo\ Smith/vaultmcp.exe`},
@@ -161,7 +164,7 @@ func TestShellPathRunsInARealShell(t *testing.T) {
 	// Inside single quotes the shell runs nothing, and the text has to stay
 	// the one word the command meant it to be. (An apostrophe in the path
 	// itself ends such a string whatever is done, so this path has none.)
-	exe = copySelf(t, filepath.Join(t.TempDir(), "a R&D folder"), "vault mcp")
+	exe = copySelf(t, filepath.Join(t.TempDir(), "a R&D folder~1+b=c@d%e"), "vault mcp")
 	sub = "$(" + shellPath(exe, windows) + " -test.run=TestHelperProcess)"
 	if out := run("set -- 'token " + sub + "'; printf %s $#"); out != "1" {
 		t.Errorf("inside single quotes: the text became %s words: %s", out, sub)

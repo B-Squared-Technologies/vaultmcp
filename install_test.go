@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -206,7 +208,7 @@ func TestRemoveVaultHookKeepsOtherCommandsInTheSameEntry(t *testing.T) {
 		map[string]any{"matcher": ".*", "hooks": []any{ours}},
 		map[string]any{"matcher": "Write", "hooks": []any{other}},
 	}}
-	if !removeVaultHook(hooks, "PostToolUse") {
+	if !removeVaultHook(hooks, "PostToolUse", "") {
 		t.Fatal("nothing was removed")
 	}
 	list, _ := hooks["PostToolUse"].([]any)
@@ -221,7 +223,7 @@ func TestRemoveVaultHookKeepsOtherCommandsInTheSameEntry(t *testing.T) {
 	if cmd, _ := inner[0].(map[string]any)["command"].(string); cmd != "/usr/local/bin/lint-hook" {
 		t.Fatalf("the wrong command was kept: %v", inner)
 	}
-	if removeVaultHook(hooks, "PostToolUse") {
+	if removeVaultHook(hooks, "PostToolUse", "") {
 		t.Fatal("a second run reported a removal")
 	}
 }
@@ -257,39 +259,63 @@ func TestCodexInstallKeepsAnotherHookGroupedWithOurs(t *testing.T) {
 
 func TestIsVaultHook(t *testing.T) {
 	for cmd, want := range map[string]bool{
-		"/usr/local/bin/vaultmcp hook":                   true,
-		"C:/Users/jo/bin/vaultmcp.exe hook":              true,
-		"C:/Users/Jo Smith/bin/vaultmcp.exe hook":        true,
-		"'/Users/jo smith/bin/vaultmcp' hook":            true,
-		"VAULTMCP_DIR=/x/y /usr/local/bin/vaultmcp hook": true,
-		"/usr/local/bin/vaultmcp hook 2>>/tmp/hook.log":  true,
-		"/usr/local/bin/vaultmcp hook>>/tmp/hook.log":    true,
-		"/usr/local/bin/vaultmcp hook; true":             true,
-		"/Users/jo/.local/bin/vaultmcp-hook>>/tmp/h.log": true,
-		"/usr/local/bin/vaultmcp hooks":                  false,
-		"'/opt/R&D/vaultmcp' hook":                       true,
-		`/opt/R\&D/vaultmcp hook`:                        true,
-		"'/opt/R&D dir/vaultmcp' hook":                   true,
-		"'/opt/a b/R&D/vaultmcp' hook":                   true,
-		`"/opt/a b/R&D/vaultmcp" hook`:                   true,
-		`/opt/R\&D\ dir/vaultmcp hook`:                   true,
-		`C:\Users\jo\bin\vaultmcp.exe hook`:              true,
-		`"C:\Users\Jo Smith\vaultmcp.exe" hook`:          true,
-		`"/opt/vaultmcp-hook scripts/audit.sh"`:          false,
-		"'/usr/local/bin/vaultmcp hook'":                 false,
-		"/usr/local/bin/vaultmcp; hook":                  false,
-		"/usr/local/bin/vaultmcp-darwin-arm64 hook":      true,
-		"C:/tools/vaultmcp-windows-amd64.exe hook":       true,
-		"/usr/local/bin/vaultmcp-darwin-arm64 status":    false,
-		"/usr/local/bin/myvaultmcp hook":                 false,
-		"/Users/jo/.local/bin/vaultmcp-hook":             true,
-		"/Users/me/gitrepos/vaultmcp/scripts/lint.sh":    false,
-		"python3 ~/.claude/hooks/vaultmcp-audit.py":      false,
-		"node ~/work/vaultmcp-tools/check.js":            false,
-		"cd vaultmcp && make hook":                       false,
-		"/usr/local/bin/vaultmcp status":                 false,
-		"/usr/local/bin/lint-hook":                       false,
-		"":                                               false,
+		"/usr/local/bin/vaultmcp hook":      true,
+		"C:/Users/jo/bin/vaultmcp.exe hook": true,
+		// Without quotes a shell runs "C:/Users/Jo", so this is not a working
+		// hook of ours. install now writes the quoted form below.
+		"C:/Users/Jo Smith/bin/vaultmcp.exe hook":   false,
+		`"C:/Users/Jo Smith/bin/vaultmcp.exe" hook`: true,
+		// Somebody else's hooks that only have the words in them.
+		"make -C /Users/me/src/vaultmcp hook":      false,
+		"git -C /repos/vaultmcp hook":              false,
+		"lint > /tmp/vaultmcp-hook":                false,
+		"lint >> /tmp/vaultmcp-hook":               false,
+		"> /tmp/vaultmcp-hook lint":                false,
+		">/tmp/h.log /usr/local/bin/vaultmcp hook": true,
+		"tee -a /var/log/vaultmcp-hook":            false,
+		"printf '%s' /bin/vaultmcp hook":           false,
+		// Ours, handed to a shell or kept in a script.
+		"zsh -lic '/usr/local/bin/vaultmcp hook'":          true,
+		`bash -lc "/usr/local/bin/vaultmcp hook"`:          true,
+		`cmd /c "C:\tools\vaultmcp.exe hook"`:              true,
+		"bash /Users/jo/.claude/hooks/vaultmcp-hook.sh":    true,
+		"C:/tools/vaultmcp-hook.cmd":                       true,
+		"pwsh -File C:/tools/vaultmcp-hook.ps1":            true,
+		"C:/Tools/VAULTMCP.EXE hook":                       true,
+		"C:/tools/vaultmcp-hook.exe":                       true,
+		"env VAULTMCP_DIR=/x /usr/local/bin/vaultmcp hook": true,
+		"true && /usr/local/bin/vaultmcp hook":             true,
+		"bash -c 'make -C /src/vaultmcp hook'":             false,
+		"'/Users/jo smith/bin/vaultmcp' hook":              true,
+		"VAULTMCP_DIR=/x/y /usr/local/bin/vaultmcp hook":   true,
+		"/usr/local/bin/vaultmcp hook 2>>/tmp/hook.log":    true,
+		"/usr/local/bin/vaultmcp hook>>/tmp/hook.log":      true,
+		"/usr/local/bin/vaultmcp hook; true":               true,
+		"/Users/jo/.local/bin/vaultmcp-hook>>/tmp/h.log":   true,
+		"/usr/local/bin/vaultmcp hooks":                    false,
+		"'/opt/R&D/vaultmcp' hook":                         true,
+		`/opt/R\&D/vaultmcp hook`:                          true,
+		"'/opt/R&D dir/vaultmcp' hook":                     true,
+		"'/opt/a b/R&D/vaultmcp' hook":                     true,
+		`"/opt/a b/R&D/vaultmcp" hook`:                     true,
+		`/opt/R\&D\ dir/vaultmcp hook`:                     true,
+		`C:\Users\jo\bin\vaultmcp.exe hook`:                true,
+		`"C:\Users\Jo Smith\vaultmcp.exe" hook`:            true,
+		`"/opt/vaultmcp-hook scripts/audit.sh"`:            false,
+		"'/usr/local/bin/vaultmcp hook'":                   false,
+		"/usr/local/bin/vaultmcp; hook":                    false,
+		"/usr/local/bin/vaultmcp-darwin-arm64 hook":        true,
+		"C:/tools/vaultmcp-windows-amd64.exe hook":         true,
+		"/usr/local/bin/vaultmcp-darwin-arm64 status":      false,
+		"/usr/local/bin/myvaultmcp hook":                   false,
+		"/Users/jo/.local/bin/vaultmcp-hook":               true,
+		"/Users/me/gitrepos/vaultmcp/scripts/lint.sh":      false,
+		"python3 ~/.claude/hooks/vaultmcp-audit.py":        false,
+		"node ~/work/vaultmcp-tools/check.js":              false,
+		"cd vaultmcp && make hook":                         false,
+		"/usr/local/bin/vaultmcp status":                   false,
+		"/usr/local/bin/lint-hook":                         false,
+		"":                                                 false,
 	} {
 		if got := isVaultHook(cmd); got != want {
 			t.Errorf("isVaultHook(%q) = %v, want %v", cmd, got, want)
@@ -326,7 +352,7 @@ func TestInstallLeavesAHookThatOnlyHasVaultmcpInItsPath(t *testing.T) {
 	if ensureHook(hooks, "PreToolUse", ours) {
 		t.Fatal("a second run registered again")
 	}
-	if removeVaultHook(hooks, "PostToolUse") {
+	if removeVaultHook(hooks, "PostToolUse", "") {
 		t.Fatal("their hook was removed as if it were ours")
 	}
 	if got := commands(hooks["PostToolUse"]); len(got) != 1 || got[0] != theirs {
@@ -407,5 +433,103 @@ func TestInstallIsIdempotentForARenamedBinary(t *testing.T) {
 	cursor := map[string]any{}
 	if !ensureCursorHook(cursor, "preToolUse", command) || ensureCursorHook(cursor, "preToolUse", command) {
 		t.Fatal("Cursor: not registered exactly once")
+	}
+}
+
+func TestHookCommand(t *testing.T) {
+	for exe, want := range map[string]string{
+		"/usr/local/bin/vaultmcp":            "/usr/local/bin/vaultmcp hook",
+		"C:/Users/jo/bin/vaultmcp.exe":       "C:/Users/jo/bin/vaultmcp.exe hook",
+		"C:/Users/Jo Smith/bin/vaultmcp.exe": `"C:/Users/Jo Smith/bin/vaultmcp.exe" hook`,
+		"/opt/R&D/vaultmcp":                  `"/opt/R&D/vaultmcp" hook`,
+		"/Users/o'neil/bin/vaultmcp":         `"/Users/o'neil/bin/vaultmcp" hook`,
+		"/opt/a$b/c`d/e\"f/g\\h/vaultmcp":    "\"/opt/a\\$b/c\\`d/e\\\"f/g\\\\h/vaultmcp\" hook",
+	} {
+		got := hookCommand(exe)
+		if got != want {
+			t.Errorf("hookCommand(%q) = %s, want %s", exe, got, want)
+		}
+		if !isVaultHook(got) {
+			t.Errorf("install would not know its own command: %s", got)
+		}
+	}
+}
+
+// TestInstallHelperProcess is not a test: it is the program the next test runs.
+func TestInstallHelperProcess(t *testing.T) {
+	if os.Getenv("VAULTMCP_TEST_HELPER") == "1" {
+		_, _ = os.Stdout.WriteString("ran")
+		os.Exit(0)
+	}
+}
+
+// The registered command has to run in a real shell when the binary sits
+// under a path with a space, an apostrophe, a dollar and an ampersand in it.
+// Tools hand the command to sh, or to Git Bash on Windows.
+func TestHookProgramRunsInARealShell(t *testing.T) {
+	shell := ""
+	if runtime.GOOS == "windows" {
+		for _, p := range []string{`C:\Program Files\Git\bin\bash.exe`, `C:\Program Files\Git\usr\bin\bash.exe`} {
+			if _, err := os.Stat(p); err == nil {
+				shell = p
+				break
+			}
+		}
+	} else if p, err := exec.LookPath("sh"); err == nil {
+		shell = p
+	}
+	if shell == "" {
+		if os.Getenv("CI") != "" {
+			t.Fatal("no shell on a CI runner: this test must not be skipped there")
+		}
+		t.Skip("no shell on this machine")
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "jo smith's $HOME R&D")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	name := "vault mcp"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	exe := filepath.Join(dir, name)
+	// #nosec G306 -- a program the test runs.
+	if err := os.WriteFile(exe, blob, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	script := hookProgram(filepath.ToSlash(exe)) + " -test.run=TestInstallHelperProcess"
+	cmd := exec.Command(shell, "-c", script)
+	cmd.Env = append(os.Environ(), "VAULTMCP_TEST_HELPER=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil || string(out) != "ran" {
+		t.Fatalf("the shell did not run the binary: %v\n%s\nscript: %s", err, out, script)
+	}
+}
+
+// install's own command for a path with an apostrophe, as an earlier version
+// wrote it (no quotes), does not split into words. Cleaning up still knows it,
+// because it is the exact text this binary registers.
+func TestRemoveVaultHookKnowsTheExactCommand(t *testing.T) {
+	const command = "/Users/o'neil/bin/vaultmcp hook"
+	if isVaultHook(command) {
+		t.Skip("the word splitter now reads this command: the exact match is no longer what saves it")
+	}
+	hooks := map[string]any{"PostToolUse": []any{map[string]any{
+		"matcher": ".*",
+		"hooks":   []any{map[string]any{"type": "command", "command": command}},
+	}}}
+	if !removeVaultHook(hooks, "PostToolUse", command) {
+		t.Fatal("the leftover entry was not removed")
+	}
+	if _, ok := hooks["PostToolUse"]; ok {
+		t.Fatalf("still there: %v", hooks)
 	}
 }
