@@ -57,10 +57,18 @@ func runHook(stdin []byte, stdout io.Writer, p vault.Paths, now time.Time) {
 			// run in a terminal that does have the passphrase would say that
 			// all is well.
 			why := "this session has no VAULTMCP_KEY and no vault key was found in the OS keychain"
-			if os.Getenv("VAULTMCP_KEY") != "" {
+			fix := " Run 'vaultmcp unlock' in a terminal to put the key in the OS keychain, where every program can reach it. On a machine with no OS keychain, start this program with VAULTMCP_KEY set."
+			switch {
+			case os.Getenv("VAULTMCP_KEY") != "":
 				why = "VAULTMCP_KEY is set in this session but does not open key.enc"
+				fix = ""
+			case !fileExists(p.Key) && fileExists(p.Recovery):
+				// No key.enc for unlock to open: the recovery code is the way.
+				fix = " Run 'vaultmcp recover' in a terminal and type the recovery code."
+			case !fileExists(p.Key):
+				fix = ""
 			}
-			warn(stdout, stdin, p, now, "VaultMCP cannot reach the vault key ("+why+"), so secrets are NOT being hidden.")
+			warn(stdout, stdin, p, now, "VaultMCP cannot reach the vault key ("+why+"), so secrets are NOT being hidden."+fix)
 		}
 		// Otherwise the vault was never set up: nothing to say.
 		return
