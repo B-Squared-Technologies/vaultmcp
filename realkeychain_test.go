@@ -93,8 +93,21 @@ func TestRealKeychain(t *testing.T) {
 	token := fakeToken(1)
 	var out bytes.Buffer
 	runHook(hookInput(token), &out, p, time.Now())
-	if out.Len() == 0 || strings.Contains(out.String(), token) {
+	// A hook that could not read the keychain also answers without the
+	// secret in it (a warning, and the call goes ahead untouched), so the
+	// placeholder itself has to be there.
+	if !strings.Contains(out.String(), "[vault:") || strings.Contains(out.String(), token) {
 		t.Fatalf("the hook did not hide the secret: %q", out.String())
+	}
+
+	// On macOS the key is saved through the system security tool, and any
+	// program running as this user can ask that tool for it, with nobody
+	// there to answer a prompt. The README says so; this is the proof.
+	if runtime.GOOS == "darwin" {
+		got, err := exec.Command("/usr/bin/security", "find-generic-password", "-s", "vaultmcp", "-a", "master", "-w").Output()
+		if err != nil || len(bytes.TrimSpace(got)) == 0 {
+			t.Fatalf("another program could not read the key from the keychain (err = %v): the README says it can", err)
+		}
 	}
 
 	// lock takes the key out of the keychain, and the hook stops tool calls.
