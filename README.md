@@ -38,7 +38,7 @@ You can paste the JSON by hand instead of using `install`. The hook needs no arg
 - Grok treats `PostToolUse` as passive: hook stdout is recorded but does not replace the result shown to the model. `cat .env` still reaches Grok; rely on Pre rewrite.
 - Codex PostToolUse cannot rewrite tool results (`updatedToolOutput` is not in the schema). Only PreToolUse is registered. Codex hooks can also be off (`[features] hooks = false`) or waiting on `/hooks` trust.
 - Fail-open: if VaultMCP errors, the tool call proceeds untouched. The one exception is a vault you locked yourself with `vaultmcp lock`: then every tool call is stopped until `vaultmcp unlock`.
-- When the hook cannot reach the vault key and nobody locked the vault (for example an app that never loaded `VAULTMCP_KEY` from your shell profile), secrets are not hidden. Claude and Codex show a warning that says why, at most once every 10 minutes in each session. Grok and Cursor have no documented way for a hook to show a warning on a call it allows, so there the hook stays silent: run `vaultmcp status` if in doubt.
+- When the hook cannot reach the vault key and nobody locked the vault (for example an app that never loaded `VAULTMCP_KEY` from your shell profile), secrets are not hidden. Claude and Codex show a warning that says why and names the fix (`vaultmcp unlock`, which puts the key in the OS keychain), at most once every 10 minutes in each session. Grok and Cursor have no documented way for a hook to show a warning on a call it allows, so there the hook stays silent: run `vaultmcp status` if in doubt.
 
 ## How it works
 
@@ -162,6 +162,7 @@ Not flagged: URLs, `${VARS}`, `$(cmd)`, existing `[vault:…]` aliases, UUIDs, l
 - **Encryption:** XChaCha20-Poly1305 (AEAD) — a 24-byte random nonce per write, encrypt-then-authenticate. Tampered stores are rejected.
 - **Key derivation:** Argon2id (64 MiB, t=3) — memory-hard, well beyond PBKDF2.
 - **Key storage:** OS keychain, or an Argon2id-wrapped key file. Never a plaintext passphrase on disk.
+- **What the keychain does not do:** it protects the key while the machine is off or your account is locked. It does not hide the key from other programs running as you. On macOS the key is saved through the system `security` tool, and any program can ask that tool for it with no prompt. Windows Credential Manager and the Linux Secret Service give it to your programs in the same way. An agent's own shell could do that, just as it could run `vaultmcp get`. VaultMCP keeps secrets out of what the model reads. It is not a wall against a program that sets out to read them.
 - **At rest:** `~/.vaultmcp/` and `captured/` are `0700`, `store.enc` and every capture file are `0600`.
 - **Machine lock:** capture files use a key derived (HKDF-SHA256) from the master key and the machine's identifier. See [Named secrets and captures](#named-secrets-and-captures) for what that does and does not protect.
 - **Bound to the alias:** each capture file is sealed with its alias as associated data, so a file copied to another name does not open there.

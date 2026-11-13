@@ -1263,3 +1263,61 @@ func TestUnlockOfferLeavesAnotherVaultsKeyAlone(t *testing.T) {
 		t.Fatal("the other vault's key was replaced")
 	}
 }
+
+// What the offer's last lines promise. lock, run where the variable is not
+// set, takes the key out of the keychain again. A program without the variable
+// is then stopped, as with any locked vault; one that has the variable goes on
+// working; and unlock ends it.
+func TestLockTakesTheOfferedKeyOutAgain(t *testing.T) {
+	const pass = "a passphrase for tests"
+	v := envVault(t)
+	terminal(t, true)
+
+	// Without a recovery code, lock refuses and the key stays where it is.
+	types(t, "y")
+	if err := cmdUnlock(nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VAULTMCP_KEY", "")
+	answers(t, pass)
+	if err := cmdLock(nil); err == nil || !strings.Contains(err.Error(), "recovery") {
+		t.Fatalf("lock with no recovery code: err = %v", err)
+	}
+	if _, ok := keyring.FromKeychain(); !ok {
+		t.Fatal("a refused lock took the key out of the keychain")
+	}
+
+	var err error
+	output(t, func() { err = cmdRecoveryCode(nil) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	answers(t, pass)
+	if err := cmdLock(nil); err != nil {
+		t.Fatalf("lock: %v", err)
+	}
+	if _, ok := keyring.FromKeychain(); ok {
+		t.Fatal("after lock the key is still in the keychain")
+	}
+	if got := hookSays(t, v.p, claudeEvent, testNow); !strings.Contains(got, `"permissionDecision":"deny"`) {
+		t.Fatalf("a program without the variable was not stopped: %q", got)
+	}
+
+	t.Setenv("VAULTMCP_KEY", pass)
+	if got := hookSays(t, v.p, claudeEvent, testNow); got != "" {
+		t.Fatalf("a program that has the variable was stopped or warned: %q", got)
+	}
+	mustGet(t, v)
+
+	types(t, "n")
+	if err := cmdUnlock(nil); err != nil {
+		t.Fatal(err)
+	}
+	if fileExists(v.p.Locked) {
+		t.Fatal("unlock left the lock marker")
+	}
+	t.Setenv("VAULTMCP_KEY", "")
+	if got := hookSays(t, v.p, claudeEvent, testNow); !strings.Contains(got, "vaultmcp unlock") || strings.Contains(got, `"deny"`) {
+		t.Fatalf("out of reach but not locked: want the warning that names the fix, got %q", got)
+	}
+}

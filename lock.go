@@ -264,6 +264,7 @@ func offerKeychain(p vault.Paths, master []byte) error {
 	_ = audit.Log(p.Audit, "unlock", "MASTER", "cli", time.Now())
 	fmt.Println("  the key is now in the OS keychain as well.")
 	fmt.Println("  To take it out again, run 'vaultmcp lock' in a terminal where VAULTMCP_KEY is not set.")
+	fmt.Println("  Until the next 'vaultmcp unlock', that also stops agent tool calls in programs that were not given VAULTMCP_KEY.")
 	return nil
 }
 
