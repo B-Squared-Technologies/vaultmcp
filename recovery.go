@@ -138,6 +138,19 @@ func openRecovery(p vault.Paths, typed string) ([]byte, error) {
 	return k, nil
 }
 
+// opensStore reports whether master is this vault's key, as far as that can be
+// told: a store.enc that is there must open with it. The OS keychain holds one
+// key per user, so the key a command was handed may belong to another vault
+// folder, and a command that then seals it, moves it or calls the vault open
+// would be acting on the wrong vault.
+func opensStore(p vault.Paths, master []byte) bool {
+	if !fileExists(p.Store) {
+		return true
+	}
+	_, err := vault.Load(p.Store, master)
+	return err == nil
+}
+
 // writeRecoveryNotice prints what a person has to know about a code they are
 // being shown. The code itself is printed by the caller.
 func writeRecoveryNotice(w io.Writer, p vault.Paths) {
@@ -188,6 +201,9 @@ func cmdRecoveryCode(args []string) error {
 		}
 		return err
 	}
+	if !opensStore(p, master) {
+		return errors.New("the key that was found does not open this vault's store.enc, so a recovery code for it would recover nothing here. Nothing was changed. The OS keychain may hold another vault folder's key, or VAULTMCP_KEY may not be this vault's passphrase: run 'vaultmcp status'")
+	}
 	replaced := fileExists(p.Recovery)
 	code, err := makeRecovery(p, master)
 	if err != nil {
@@ -227,10 +243,8 @@ func cmdRecover(args []string) error {
 	if err != nil {
 		return err
 	}
-	if fileExists(p.Store) {
-		if _, err := vault.Load(p.Store, master); err != nil {
-			return errors.New("the recovery file opened, but the key in it does not open store.enc: the two are not from the same vault. Nothing was changed")
-		}
+	if !opensStore(p, master) {
+		return errors.New("the recovery file opened, but the key in it does not open store.enc: the two are not from the same vault. Nothing was changed")
 	}
 	where, err := restoreKey(p, master)
 	if err != nil {
@@ -280,13 +294,18 @@ func restoreKey(p vault.Paths, master []byte) (string, error) {
 		if got, err := keyring.UnwrapFromFile(p.Key, pass); err == nil && subtle.ConstantTimeCompare(got, master) == 1 {
 			return "key.enc already opens with that passphrase, nothing had to change", nil
 		}
+		// A copy, not a move: key.enc stays where it is until the new one
+		// has been written and read back, so a failed write costs nothing.
 		aside := p.Key + ".before-recover-" + time.Now().Format("20060102-150405")
-		if err := os.Rename(p.Key, aside); err != nil {
-			return "", fmt.Errorf("the old key.enc could not be moved aside, so nothing was changed: %w", err)
+		if err := copyStore(p.Key, aside); err != nil {
+			return "", fmt.Errorf("the old key.enc could not be copied aside, so nothing was changed: %w", err)
+		}
+		if err := writeKeyCopy(p.Key, master, pass); err != nil {
+			_ = os.Remove(aside)
+			return "", err
 		}
 		fmt.Fprintf(os.Stderr, "  the old key.enc was kept as %s\n", aside)
-	}
-	if err := writeKeyCopy(p.Key, master, pass); err != nil {
+	} else if err := writeKeyCopy(p.Key, master, pass); err != nil {
 		return "", err
 	}
 	if env != "" {

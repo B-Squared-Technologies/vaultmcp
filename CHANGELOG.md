@@ -110,6 +110,10 @@ captures are sealed with a key derived from it.
   call it allows. When the key is out of reach there, the hook is silent.
 - The OS keychain holds one VaultMCP key per user, not one per vault
   folder.
+- "A person at the terminal" means stderr is a terminal. An agent's shell
+  that runs under a pseudo-terminal counts, so a first `vaultmcp set` run
+  by an agent there shows the recovery code in that agent's transcript.
+  Make the first key yourself.
 - A new recovery code does not shut out someone who already holds the old
   code together with an old copy of the vault folder: the key itself never
   changes.

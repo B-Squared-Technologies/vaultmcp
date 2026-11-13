@@ -40,6 +40,9 @@ func cmdLock(args []string) error {
 		fmt.Println("  nothing to lock: there is no vault key in the OS keychain")
 		return nil
 	}
+	if !opensStore(p, inKeychain) {
+		return fmt.Errorf("the key in the OS keychain does not open store.enc in %s: it is most likely another vault folder's key. Nothing was changed", p.Dir)
+	}
 	// A locked vault whose passphrase is forgotten can only be opened with
 	// the recovery code. Without one, locking is how a vault gets lost.
 	if !fileExists(p.Recovery) {
@@ -96,7 +99,10 @@ func cmdUnlock(args []string) error {
 		fmt.Println("  nothing to unlock: VAULTMCP_KEY is set and opens this vault, so it is never locked")
 		return nil
 	}
-	if _, ok := keyring.FromKeychain(); ok {
+	if inKeychain, ok := keyring.FromKeychain(); ok {
+		if !opensStore(p, inKeychain) {
+			return fmt.Errorf("the OS keychain holds a key, but it does not open store.enc in %s: it is most likely another vault folder's key, and it was left alone. The keychain holds one key per user. To open this folder beside the other, give it a passphrase with VAULTMCP_KEY", p.Dir)
+		}
 		_ = os.Remove(p.Locked)
 		fmt.Println("  already unlocked: the key is in the OS keychain")
 		return nil

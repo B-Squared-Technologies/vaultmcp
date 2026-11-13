@@ -283,7 +283,7 @@ func dropMoved(p vault.Paths, master []byte, asRead vault.Store, move []string) 
 	return moved, len(current), nil
 }
 
-// copyStore writes an owner-only copy of the sealed store.
+// copyStore writes an owner-only copy of a sealed vault file.
 func copyStore(storePath, backup string) error {
 	// #nosec G304 -- storePath is internally derived (~/.vaultmcp), not user input.
 	blob, err := os.ReadFile(storePath)

@@ -667,3 +667,60 @@ func TestHookIsSilentWhenTheVaultWasNeverSetUp(t *testing.T) {
 		}
 	}
 }
+
+// A key that is not this vault's must not be sealed, moved or called "open":
+// the keychain holds one key per user, and it may be another folder's.
+func TestCommandsRefuseAKeyThatDoesNotOpenTheStore(t *testing.T) {
+	v, code := keychainVault(t)
+	other := crypto.NewKey()
+	if err := keyring.ToKeychain(other); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdRecoveryCode(nil); err == nil || !strings.Contains(err.Error(), "does not open this vault's store.enc") {
+		t.Fatalf("recovery-code: err = %v, want a refusal", err)
+	}
+	if _, err := openRecovery(v.p, code); err != nil {
+		t.Fatal("a refused recovery-code replaced the recovery file of the real key")
+	}
+	if err := cmdLock(nil); err == nil || !strings.Contains(err.Error(), "does not open store.enc") {
+		t.Fatalf("lock: err = %v, want a refusal", err)
+	}
+	if err := os.WriteFile(v.p.Locked, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdUnlock(nil); err == nil || !strings.Contains(err.Error(), "does not open store.enc") {
+		t.Fatalf("unlock: err = %v, want a refusal", err)
+	}
+	if !bytes.Equal(keychainKey(t), other) || fileExists(v.p.Key) || !fileExists(v.p.Locked) {
+		t.Fatal("a refused command changed something")
+	}
+}
+
+// If the new key.enc cannot be written, the old one is still there.
+func TestRecoverKeepsTheOldKeyFileWhenTheNewOneFails(t *testing.T) {
+	useMockKeychain(t)
+	terminal(t, true)
+	v := newTestVault(t)
+	t.Setenv("VAULTMCP_KEY", "the first passphrase")
+	var err error
+	_, shown := output(t, func() { err = cmdSet([]string{"MINE", "value-one"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := codeShape.FindString(shown)
+	// A folder where the new file has to go makes the write fail.
+	if err := os.Mkdir(v.p.Key+".new", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VAULTMCP_KEY", "a second passphrase")
+	answers(t, code)
+	if err := cmdRecover(nil); err == nil {
+		t.Fatal("recover reported success though key.enc could not be written")
+	}
+	if _, err := keyring.UnwrapFromFile(v.p.Key, "the first passphrase"); err != nil {
+		t.Fatalf("the old key.enc is gone or changed after a failed recover: %v", err)
+	}
+	if kept, _ := filepath.Glob(v.p.Key + ".before-recover-*"); len(kept) != 0 {
+		t.Fatalf("a failed recover left a copy behind: %v", kept)
+	}
+}
