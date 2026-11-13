@@ -135,7 +135,7 @@ Locking takes the key out of the keychain. It never deletes it.
 
 - `vaultmcp lock` writes the key into `key.enc` behind a passphrase (it asks you to choose one the first time), reads the file back to prove the key is in it, and only then takes the key out of the OS keychain. It refuses if the vault has no recovery code, because a locked vault with a forgotten passphrase would otherwise be lost.
 - `vaultmcp unlock` asks for the passphrase and puts the key back into the keychain. `key.enc` stays on disk after that, so choose the passphrase with care: from the first lock on, it protects a copy of the key.
-- Both commands need a person: the passphrase is typed at a prompt, so a script or an agent cannot lock or unlock the vault.
+- `lock` always needs a person: the passphrase is typed at a prompt, so a script or an agent cannot lock the vault. `unlock` needs the passphrase too, typed at the prompt or present in `VAULTMCP_KEY`.
 - While the vault is locked, the hook cannot hide secrets, so it **stops agent tool calls** with a message that says to run `vaultmcp unlock`. That is deliberate: an agent running with redaction silently off is the opposite of what locking is for.
 - A vault that uses `VAULTMCP_KEY` cannot be locked, and `lock` says so: the passphrase is in the environment, so the vault is open to anything running as you. For the same reason, a session that has `VAULTMCP_KEY` set to the passphrase still opens a locked vault.
 - The OS keychain holds one VaultMCP key per user, not one per vault folder. If you use several folders through `VAULTMCP_DIR`, give them passphrases with `VAULTMCP_KEY`.

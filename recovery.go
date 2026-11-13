@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/B-Squared-Technologies/vaultmcp/internal/audit"
+	"github.com/B-Squared-Technologies/vaultmcp/internal/capture"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/crypto"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/keyring"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/vault"
@@ -152,13 +153,32 @@ func openRecovery(p vault.Paths, typed string) ([]byte, error) {
 
 // opensStore reports whether master is this vault's key, as far as that can be
 // told: a store.enc that is there must open with it (a store that cannot be
-// read at all is not taken as a yes). The OS keychain holds one
+// read at all is not taken as a yes), and where there is no store.enc but
+// there are captures, it must open at least one of those. The OS keychain holds one
 // key per user, so the key a command was handed may belong to another vault
 // folder, and a command that then seals it, moves it or calls the vault open
 // would be acting on the wrong vault.
 func opensStore(p vault.Paths, master []byte) bool {
-	_, err := vault.Load(p.Store, master)
-	return err == nil
+	if _, err := vault.Load(p.Store, master); err != nil {
+		return false
+	}
+	if fileExists(p.Store) {
+		return true
+	}
+	// No store.enc to try the key on: vault.Load calls a missing store empty
+	// and would pass any key. Captures are sealed with a key derived from the
+	// master key, so they can stand in.
+	capKey, _ := captureKey(master)
+	items, err := capture.List(p.Captured, capKey, capture.Key(master, ""))
+	if err != nil {
+		return false
+	}
+	for _, it := range items {
+		if it.Readable {
+			return true
+		}
+	}
+	return len(items) == 0
 }
 
 // keepAside copies the key file at src to dst, which must not exist yet, and

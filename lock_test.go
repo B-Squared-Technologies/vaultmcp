@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/B-Squared-Technologies/vaultmcp/internal/capture"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/crypto"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/keyring"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/vault"
@@ -1021,5 +1022,45 @@ func TestKeepAsideNeverOverwrites(t *testing.T) {
 	}
 	if err := keepAside(src, dst); err != nil || string(mustRead(t, dst)) != "second" {
 		t.Fatalf("keepAside: %v", err)
+	}
+}
+
+// A folder that holds only captures has no store.enc to try a key on. The
+// captures stand in: a key that opens none of them is not this vault's.
+func TestAKeyIsCheckedAgainstCapturesWhenThereIsNoStore(t *testing.T) {
+	v, code := keychainVault(t)
+	master := keychainKey(t)
+	capKey, _ := captureKey(master)
+	if _, err := capture.Write(v.p.Captured, capKey, "A_CAPTURE", capture.Entry{Value: "captured-value", Kind: "test", Created: testNow.UTC().Format(time.RFC3339)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(v.p.Store); err != nil {
+		t.Fatal(err)
+	}
+	if !opensStore(v.p, master) {
+		t.Fatal("the vault's own key was refused")
+	}
+	answers(t, "a passphrase for the lock")
+	if err := cmdLock(nil); err != nil {
+		t.Fatalf("lock with the vault's own key: %v", err)
+	}
+	other := crypto.NewKey()
+	if err := keyring.ToKeychain(other); err != nil {
+		t.Fatal(err)
+	}
+	if opensStore(v.p, other) {
+		t.Fatal("another vault's key passed for this one")
+	}
+	if err := cmdRecoveryCode([]string{"--replace"}); err == nil {
+		t.Fatal("recovery-code sealed another vault's key")
+	}
+	if _, err := openRecovery(v.p, code); err != nil {
+		t.Fatal("the saved code was ended")
+	}
+	if err := cmdUnlock(nil); err == nil || !fileExists(v.p.Locked) {
+		t.Fatalf("unlock called the vault open with another vault's key: err = %v", err)
+	}
+	if got := hookSays(t, v.p, claudeEvent, testNow); !strings.Contains(got, `"permissionDecision":"deny"`) {
+		t.Fatalf("a locked vault let a call through: %s", got)
 	}
 }

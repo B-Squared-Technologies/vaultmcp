@@ -65,6 +65,14 @@ func runHook(stdin []byte, stdout io.Writer, p vault.Paths, now time.Time) {
 		// Otherwise the vault was never set up: nothing to say.
 		return
 	}
+	// A vault locked on purpose stays stopped unless the key that was found is
+	// its own. The keychain entry is one per user, so another vault folder's
+	// key may be in it, and another vault being open must not undo this lock.
+	// The extra look at the store happens only while a marker is there.
+	if fileExists(p.Locked) && !opensStore(p, key) {
+		write(stdout, hook.Stop(stdin, lockedMessage))
+		return
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return
@@ -76,18 +84,12 @@ func runHook(stdin []byte, stdout io.Writer, p vault.Paths, now time.Time) {
 	})
 	storeFailed := false
 	out := hook.Process(stdin, hook.Deps{Paths: p, MasterKey: key, CaptureKey: capKey, ExePath: exe, Now: now, StoreFailed: func() { storeFailed = true }})
-	switch {
-	case !storeFailed:
-		write(stdout, out)
-	case fileExists(p.Locked):
-		// A key was found, but it is not this vault's (the keychain entry is
-		// one per user, and another folder's key is in it), and this vault
-		// was locked on purpose. Another vault being open must not undo that.
-		write(stdout, hook.Stop(stdin, lockedMessage))
-	default:
-		// Not this vault's key, and nobody locked it: the keychain holds
-		// another folder's key, or VAULTMCP_KEY opens a key.enc that was
-		// made over an existing vault.
+	write(stdout, out)
+	if storeFailed {
+		// A key was found, but it is not this vault's, and nobody locked the
+		// vault: the keychain holds another folder's key, or VAULTMCP_KEY
+		// opens a key.enc that was made over an existing vault. Process
+		// answers nothing when the store fails, so this is the only answer.
 		warn(stdout, stdin, p, now, "VaultMCP found a key, but it does not open this vault (store.enc), so secrets are NOT being hidden. Run 'vaultmcp status' in a terminal.")
 	}
 	// Expire old captures, at most once a day. Only now, with the answer

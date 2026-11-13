@@ -52,8 +52,9 @@ Existing vaults: run `vaultmcp recovery-code` and save what it prints.
 **`lock` and `unlock` are a real pair.** `lock` takes the key out of the OS
 keychain and leaves it in `key.enc` behind a passphrase, and `unlock` puts
 it back. The key is never deleted. Before, `unlock` stored nothing and
-`lock` only deleted. Both ask for the passphrase at a prompt, so a script or
-an agent cannot run them.
+`lock` only deleted. `lock` asks for the passphrase at a prompt on every
+path, so a script or an agent cannot lock a vault. `unlock` needs the
+passphrase too, typed or in `VAULTMCP_KEY`.
 
 **The hook says when it is not protecting you.** It used to stay silent
 whenever it could not reach the key. Now a vault you locked on purpose stops
