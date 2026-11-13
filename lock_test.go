@@ -981,17 +981,21 @@ func TestMessagesWhenTheKeyIsLost(t *testing.T) {
 	}
 }
 
-// A store that cannot be read is not proof that a key is the right one.
+// A store that cannot be read is not proof that a key is the right one. With
+// the folder closed, nothing in it can even be seen to exist.
 func TestAnUnreadableStoreIsNotAYes(t *testing.T) {
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
-		t.Skip("needs a file the owner cannot read")
+		t.Skip("needs a folder the owner cannot look into")
 	}
 	v, code := keychainVault(t)
-	if err := os.Chmod(v.p.Store, 0o000); err != nil {
+	if err := os.Chmod(v.p.Dir, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(v.p.Store, 0o600) })
-	if err := cmdRecoveryCode([]string{"--replace"}); err == nil {
+	err := cmdRecoveryCode(nil)
+	if cerr := os.Chmod(v.p.Dir, 0o700); cerr != nil {
+		t.Fatal(cerr)
+	}
+	if err == nil {
 		t.Fatal("recovery-code sealed a key it could not check against the store")
 	}
 	if _, err := openRecovery(v.p, code); err != nil {
