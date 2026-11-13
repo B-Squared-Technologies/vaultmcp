@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"crypto/subtle"
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
+
+	"golang.org/x/term"
 
 	"github.com/B-Squared-Technologies/vaultmcp/internal/audit"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/keyring"
@@ -197,6 +201,71 @@ func endLock(p vault.Paths) error {
 	return err
 }
 
+// typedLine reads one line a person types at the terminal. It reports false
+// when stdin is not a terminal, so text piped in by a script is never taken
+// for an answer. A variable only so tests can stand in for the person.
+var typedLine = func() (string, bool) {
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return "", false
+	}
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	return line, err == nil
+}
+
+// askYesNo puts a question to the person at the terminal. Anything but a
+// typed y or yes is a no, and so is nobody being there to ask.
+func askYesNo(question string) bool {
+	if !atTerminal() {
+		return false
+	}
+	fmt.Fprint(os.Stderr, "  "+question+" [y/N] ")
+	line, ok := typedLine()
+	if !ok {
+		fmt.Fprintln(os.Stderr)
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true
+	}
+	return false
+}
+
+// offerKeychain is for a vault that VAULTMCP_KEY opens. Such a vault works in
+// every program that was handed the variable, and in no other: an app started
+// from a desktop or a launcher usually was not, on any system, and the hook it
+// runs then cannot reach the key. The OS keychain is the one place every
+// program of this user can reach, so when it is empty, unlock offers to put
+// the key there as well.
+//
+// It is a question, with no as the answer when nobody is there, because the
+// variable is often used on purpose on a machine that should keep its key out
+// of the keychain. A script that runs unlock there must change nothing.
+func offerKeychain(p vault.Paths, master []byte) error {
+	if !keyring.Available() {
+		return nil
+	}
+	if now, ok := keyring.FromKeychain(); ok {
+		if subtle.ConstantTimeCompare(now, master) == 1 {
+			fmt.Println("  the OS keychain holds this key as well, so a program that was not given VAULTMCP_KEY can reach it too")
+		} else {
+			fmt.Println("  note: the OS keychain holds a different key, most likely another vault folder's, and it was left alone.")
+			fmt.Println("  A program that was not given VAULTMCP_KEY cannot open this vault.")
+		}
+		return nil
+	}
+	if !askYesNo("Also put the key in the OS keychain, so a program that was not given VAULTMCP_KEY can reach it?") {
+		return nil
+	}
+	if err := keychainPut(master); err != nil {
+		return fmt.Errorf("the OS keychain refused the key, so nothing changed: %w", err)
+	}
+	_ = audit.Log(p.Audit, "unlock", "MASTER", "cli", time.Now())
+	fmt.Println("  the key is now in the OS keychain as well.")
+	fmt.Println("  To take it out again, run 'vaultmcp lock' in a terminal where VAULTMCP_KEY is not set.")
+	return nil
+}
+
 func cmdUnlock(args []string) error {
 	if len(args) > 0 {
 		return errors.New("unexpected argument: usage: vaultmcp unlock (the passphrase is typed at a prompt, never given as an argument)")
@@ -215,7 +284,7 @@ func cmdUnlock(args []string) error {
 		}
 		_ = endLock(p)
 		fmt.Println("  nothing to unlock: VAULTMCP_KEY is set and opens this vault, so it is never locked")
-		return nil
+		return offerKeychain(p, inFile)
 	}
 	if inKeychain, ok := keyring.FromKeychain(); ok {
 		if !opensStore(p, inKeychain) {

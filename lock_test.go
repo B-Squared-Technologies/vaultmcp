@@ -1090,3 +1090,170 @@ func TestUnlockSaysSoWhenTheMarkerCannotBeRemoved(t *testing.T) {
 		t.Fatalf("err = %v, out = %q", err, stdout)
 	}
 }
+
+// --- unlock with VAULTMCP_KEY set: the offer to use the keychain as well ---
+
+// types stands in for the person at the keyboard answering a yes/no question.
+// With no lines given, any question asked fails the test.
+func types(t *testing.T, lines ...string) {
+	t.Helper()
+	old := typedLine
+	n := 0
+	typedLine = func() (string, bool) {
+		if n >= len(lines) {
+			t.Errorf("a question nobody was there to answer")
+			return "", false
+		}
+		n++
+		return lines[n-1] + "\n", true
+	}
+	t.Cleanup(func() { typedLine = old })
+}
+
+// envVault makes a vault that VAULTMCP_KEY opens, with an empty keychain.
+func envVault(t *testing.T) testVault {
+	t.Helper()
+	useMockKeychain(t)
+	terminal(t, false)
+	v := newTestVault(t)
+	t.Setenv("VAULTMCP_KEY", "a passphrase for tests")
+	if err := cmdSet([]string{"MINE", "value-one"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := keyring.FromKeychain(); ok {
+		t.Fatal("setting up a VAULTMCP_KEY vault put a key in the keychain")
+	}
+	return v
+}
+
+// The case this is for: the terminal has VAULTMCP_KEY, an app from the desktop
+// does not. After a yes, the hook that app runs reaches the key.
+func TestUnlockWithTheVariableSetOffersTheKeychain(t *testing.T) {
+	v := envVault(t)
+	terminal(t, true)
+	types(t, "y")
+	var err error
+	stdout, stderr := output(t, func() { err = cmdUnlock(nil) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr, "[y/N]") || !strings.Contains(stdout, "now in the OS keychain") {
+		t.Fatalf("stdout=%q stderr=%q", stdout, stderr)
+	}
+	inFile, err := keyring.UnwrapFromFile(v.p.Key, "a passphrase for tests")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(keychainKey(t), inFile) {
+		t.Fatal("the keychain does not hold this vault's key")
+	}
+
+	// A program that was not given the variable now reaches the vault.
+	t.Setenv("VAULTMCP_KEY", "")
+	mustGet(t, v)
+
+	// Asked again, there is nothing left to offer.
+	t.Setenv("VAULTMCP_KEY", "a passphrase for tests")
+	types(t)
+	stdout, stderr = output(t, func() { err = cmdUnlock(nil) })
+	if err != nil || strings.Contains(stderr, "[y/N]") || !strings.Contains(stdout, "holds this key as well") {
+		t.Fatalf("second run: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+}
+
+// Anything but a typed yes leaves the keychain empty.
+func TestUnlockOfferTakesOnlyATypedYes(t *testing.T) {
+	for _, line := range []string{"", "n", "no", "maybe", "yes please"} {
+		envVault(t)
+		terminal(t, true)
+		types(t, line)
+		if err := cmdUnlock(nil); err != nil {
+			t.Fatalf("%q: %v", line, err)
+		}
+		if _, ok := keyring.FromKeychain(); ok {
+			t.Fatalf("answer %q put the key in the keychain", line)
+		}
+	}
+	for _, line := range []string{"y", "Y", "yes", " YES "} {
+		envVault(t)
+		terminal(t, true)
+		types(t, line)
+		if err := cmdUnlock(nil); err != nil {
+			t.Fatalf("%q: %v", line, err)
+		}
+		if _, ok := keyring.FromKeychain(); !ok {
+			t.Fatalf("answer %q did not put the key in the keychain", line)
+		}
+	}
+}
+
+// A machine that uses the variable on purpose, and a script or an agent that
+// runs unlock there: no question, no change.
+func TestUnlockOfferNeedsAPerson(t *testing.T) {
+	t.Run("no terminal", func(t *testing.T) {
+		envVault(t)
+		types(t)
+		var err error
+		_, stderr := output(t, func() { err = cmdUnlock(nil) })
+		if err != nil || strings.Contains(stderr, "[y/N]") {
+			t.Fatalf("err=%v stderr=%q", err, stderr)
+		}
+		if _, ok := keyring.FromKeychain(); ok {
+			t.Fatal("unlock put the key in the keychain with nobody there")
+		}
+	})
+	t.Run("a terminal for output, the answer piped in", func(t *testing.T) {
+		envVault(t)
+		terminal(t, true)
+		// The real reader, with a yes waiting in a pipe on stdin.
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.WriteString("y\n"); err != nil {
+			t.Fatal(err)
+		}
+		_ = w.Close()
+		oldStdin := os.Stdin
+		os.Stdin = r
+		t.Cleanup(func() { os.Stdin = oldStdin; _ = r.Close() })
+		if err := cmdUnlock(nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := keyring.FromKeychain(); ok {
+			t.Fatal("unlock took piped input for a typed yes")
+		}
+	})
+	t.Run("no keychain on this machine", func(t *testing.T) {
+		envVault(t)
+		terminal(t, true)
+		types(t)
+		zk.MockInitWithError(errors.New("no keychain here"))
+		t.Cleanup(zk.MockInit)
+		var err error
+		_, stderr := output(t, func() { err = cmdUnlock(nil) })
+		if err != nil || strings.Contains(stderr, "[y/N]") {
+			t.Fatalf("err=%v stderr=%q", err, stderr)
+		}
+	})
+}
+
+// The keychain holds one key per user. Another vault folder's key there is
+// not ours to replace: say so, ask nothing, change nothing.
+func TestUnlockOfferLeavesAnotherVaultsKeyAlone(t *testing.T) {
+	envVault(t)
+	terminal(t, true)
+	types(t)
+	other := bytes.Repeat([]byte{7}, 32)
+	if err := keyring.ToKeychain(other); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	stdout, stderr := output(t, func() { err = cmdUnlock(nil) })
+	if err != nil || strings.Contains(stderr, "[y/N]") || !strings.Contains(stdout, "different key") {
+		t.Fatalf("err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	if !bytes.Equal(keychainKey(t), other) {
+		t.Fatal("the other vault's key was replaced")
+	}
+}

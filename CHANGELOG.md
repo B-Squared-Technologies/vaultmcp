@@ -83,6 +83,10 @@ agent tool calls until you unlock it, and a key that is merely out of reach
   exist, asks for a passphrase, and refuses when `VAULTMCP_KEY` is set.
 - `vaultmcp unlock` puts the key back into the keychain. Where there is
   nothing to unlock, it says that and no longer prints "vault unlocked".
+- With `VAULTMCP_KEY` set and the OS keychain empty, `vaultmcp unlock` asks
+  whether to put the key in the keychain as well, so that a program which
+  was not given the variable can reach it. Only a person at a terminal is
+  asked, and anything but a typed yes changes nothing.
 - While a vault is locked with `vaultmcp lock`, the hook stops agent tool
   calls. In every other case it still never blocks.
 - The first `vaultmcp set` prints a recovery code on stderr when a person is
