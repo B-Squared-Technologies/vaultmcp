@@ -111,6 +111,11 @@ captures are sealed with a key derived from it.
   capture then expires after 7 days where it would have had 30.
 - An agent that runs `vaultmcp recovery-code` gets the code in its
   transcript. Run it yourself.
+- Two vault commands run in the same instant (two `recovery-code
+  --replace`, or `lock` against another folder's `unlock`) are not kept
+  apart by a lock. Each one checks the keychain again just before it
+  changes it and stages its files under its own name, which leaves a gap
+  of milliseconds. Run them one at a time.
 - Grok and Cursor give a hook no documented way to show a warning on a
   call it allows. When the key is out of reach there, the hook is silent.
 - The OS keychain holds one VaultMCP key per user, not one per vault
