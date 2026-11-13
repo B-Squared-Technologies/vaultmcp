@@ -246,7 +246,9 @@ func plainPathByte(c byte) bool {
 //
 // Quotes are not used, on purpose. The substitution often lands inside a
 // string the command already quoted, and a quote of ours would end that
-// string early and hand the shell the rest as loose words.
+// string early and hand the shell the rest as loose words. The one exception
+// is a newline, which no backslash can escape: it gets double quotes, and
+// those sit inside the $( ), where they do not end a string outside it.
 //
 // On Windows the shell is Git Bash, which takes a backslash as an escape, so
 // backslashes become forward slashes there first. Elsewhere a backslash is an
@@ -257,10 +259,17 @@ func shellPath(p string, windows bool) string {
 	}
 	var b strings.Builder
 	for i := 0; i < len(p); i++ {
-		if c := p[i]; c < 0x80 && !plainPathByte(c) {
+		c := p[i]
+		if c == '\n' {
+			// A backslash before a newline joins two lines and drops both
+			// characters, so a newline goes in quotes of its own.
+			b.WriteString("\"\n\"")
+			continue
+		}
+		if c < 0x80 && !plainPathByte(c) {
 			b.WriteByte('\\')
 		}
-		b.WriteByte(p[i])
+		b.WriteByte(c)
 	}
 	return b.String()
 }

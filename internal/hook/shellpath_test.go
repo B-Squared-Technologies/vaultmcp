@@ -23,6 +23,7 @@ func TestShellPath(t *testing.T) {
 		{"a dollar", "/opt/$HOME/vaultmcp", false, `/opt/\$HOME/vaultmcp`},
 		{"an ampersand", "/opt/R&D/vaultmcp", false, `/opt/R\&D/vaultmcp`},
 		{"not ASCII", "/Users/zoë/vaultmcp", false, "/Users/zoë/vaultmcp"},
+		{"a newline", "/opt/a\nb/vaultmcp", false, "/opt/a\"\n\"b/vaultmcp"},
 		{"windows", `C:\Users\jo\bin\vaultmcp.exe`, true, "C:/Users/jo/bin/vaultmcp.exe"},
 		{"windows, a space", `C:\Users\Jo Smith\vaultmcp.exe`, true, `C:/Users/Jo\ Smith/vaultmcp.exe`},
 		// Off Windows a backslash is part of a file name, so it is escaped.
@@ -46,6 +47,7 @@ func TestSubstitutionWithAnAwkwardBinaryPathStaysValidJSON(t *testing.T) {
 		`/opt/odd\name/vaultmcp`,
 		`/opt/odd\qame/vaultmcp`,
 		"/opt/R&D <x>/vaultmcp",
+		"/opt/two\nlines/vaultmcp",
 	} {
 		d := testDeps(t)
 		d.ExePath = exe
@@ -163,5 +165,60 @@ func TestShellPathRunsInARealShell(t *testing.T) {
 	sub = "$(" + shellPath(exe, windows) + " -test.run=TestHelperProcess)"
 	if out := run("set -- 'token " + sub + "'; printf %s $#"); out != "1" {
 		t.Errorf("inside single quotes: the text became %s words: %s", out, sub)
+	}
+
+	// A newline in the path. Windows has no such file names.
+	if !windows {
+		exe = copySelf(t, filepath.Join(t.TempDir(), "two\nlines"), "vaultmcp")
+		sub = "$(" + shellPath(exe, false) + " -test.run=TestHelperProcess)"
+		if out := run(`printf %s "token ` + sub + `"`); out != "token ran" {
+			t.Errorf("a newline in the path: got %q from %q", out, sub)
+		}
+	}
+}
+
+// PowerShell is the other shell an agent on Windows may hand a command to.
+// A plain path works there. A path with a space does not: PowerShell has no
+// backslash escape, the command fails, and the secret is not put in. That is
+// a known limit in the changelog, and this test says when it stops being true.
+func TestSubstitutionInPowerShell(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell is the Windows case")
+	}
+	ps, err := exec.LookPath("pwsh")
+	if err != nil {
+		ps, err = exec.LookPath("powershell")
+	}
+	if err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatal("no PowerShell on a Windows CI runner: this test must not be skipped there")
+		}
+		t.Skip("no PowerShell on this machine")
+	}
+	// The temp folder can come in its short form (RUNNER~1), which is not a
+	// plain path. The long form is.
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(exe string) string {
+		t.Helper()
+		sub := "$(" + shellPath(exe, true) + " -test.run=TestHelperProcess)"
+		cmd := exec.Command(ps, "-NoProfile", "-NonInteractive", "-Command", "Write-Output "+sub)
+		cmd.Env = append(os.Environ(), "VAULTMCP_TEST_HELPER=1")
+		out, _ := cmd.CombinedOutput()
+		return strings.TrimSpace(string(out))
+	}
+
+	plain := copySelf(t, filepath.Join(dir, "plain"), "vaultmcp")
+	if p := shellPath(plain, true); strings.Contains(p, `\`) {
+		t.Fatalf("this test needs a path with nothing to escape, got %s", p)
+	}
+	if got := run(plain); got != "ran" {
+		t.Errorf("a plain path in PowerShell: got %q", got)
+	}
+	spaced := copySelf(t, filepath.Join(dir, "jo smith"), "vaultmcp")
+	if got := run(spaced); got == "ran" {
+		t.Error("a path with a space now works in PowerShell: take the known limit out of the changelog")
 	}
 }

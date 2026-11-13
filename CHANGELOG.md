@@ -100,7 +100,9 @@ agent tool calls until you unlock it, and a key that is merely out of reach
   own registration, and could be removed.
 - A binary path with a space or another special character in it now works
   in the commands the hook rewrites, when bash runs them (Git Bash on
-  Windows, where backslashes are also handled). PowerShell is not tested.
+  Windows, where backslashes are also handled). In PowerShell a plain path
+  works. A path with a space or special character does not: the command
+  fails there and the secret is not put in.
 
 ### Upgrading
 
