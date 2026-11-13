@@ -21,6 +21,10 @@ your machine, the first one is still in the keychain: when `vaultmcp list`
 fails with a decryption error while `VAULTMCP_KEY` is set, unset it and try
 again.
 
+Versions 0.1.0 through 0.1.3 are withdrawn: their release downloads are
+removed and `go.mod` retracts them, so Go marks them as retracted and shows
+the reason.
+
 ### What changed, and why
 
 **Secrets the hook finds are kept apart from the ones you store.**
