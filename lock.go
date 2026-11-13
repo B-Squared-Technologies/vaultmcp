@@ -294,10 +294,10 @@ func cmdUnlock(args []string) error {
 			// prove a person is here, and ending a lock takes a person: an
 			// agent that holds the variable must not be able to unblock the
 			// programs the owner stopped.
-			return errors.New("the vault is locked for programs that were not given VAULTMCP_KEY, and ending a lock takes a person: run 'vaultmcp unlock' at a terminal")
+			return errors.New("a lock is in place, and ending a lock takes a person: run 'vaultmcp unlock' at a terminal")
 		}
 		if err := endLock(p); err != nil {
-			return fmt.Errorf("VAULTMCP_KEY opens this vault, but the lock marker could not be removed, so agent tool calls in programs that were not given it stay stopped: %w", err)
+			return fmt.Errorf("VAULTMCP_KEY opens this vault, but the lock marker could not be removed, so the lock is still in place: %w", err)
 		}
 		if wasLocked {
 			fmt.Println("  the lock is ended: VAULTMCP_KEY opens this vault, and agent tool calls in programs that were not given it are no longer stopped")

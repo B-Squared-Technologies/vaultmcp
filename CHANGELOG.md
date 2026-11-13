@@ -57,9 +57,9 @@ Existing vaults: run `vaultmcp recovery-code` and save what it prints.
 keychain and leaves it in `key.enc` behind a passphrase, and `unlock` puts
 it back. The key is never deleted. Before, `unlock` stored nothing and
 `lock` only deleted. `lock` asks for the passphrase at a prompt on every
-path, so a script or an agent cannot lock a vault. Ending a lock needs a
-person too: `unlock` asks for the passphrase, or, where `VAULTMCP_KEY` is
-set, has to be run at a terminal.
+path, so a script or an agent cannot lock a vault. `unlock` needs a person
+too: it asks for the passphrase, or, where `VAULTMCP_KEY` is set, has to be
+run at a terminal.
 
 **The hook says when it is not protecting you.** It used to stay silent
 whenever it could not reach the key. Now a vault you locked on purpose stops
@@ -87,7 +87,7 @@ agent tool calls until you unlock it, and a key that is merely out of reach
 - With `VAULTMCP_KEY` set and the OS keychain empty, `vaultmcp unlock` asks
   whether to put the key in the keychain as well, so that a program which
   was not given the variable can reach it. Only a person at a terminal is
-  asked, and anything but a typed yes changes nothing.
+  asked, and anything but a typed yes leaves the keychain alone.
 - The warning for a key that is out of reach now names the fix: run
   `vaultmcp unlock` in a terminal, or `vaultmcp recover` when there is no
   `key.enc` for a passphrase to open.
@@ -96,8 +96,12 @@ agent tool calls until you unlock it, and a key that is merely out of reach
   a script or an agent it refuses, and the lock stays. With no lock, it
   says where to run it to be asked about the keychain.
 - A lock never stops a program that has `VAULTMCP_KEY`: that program holds
-  a working key. To have `vaultmcp lock` stop every agent on a machine,
-  keep the key in the OS keychain there and do not set the variable.
+  a working key, and could delete the lock marker, which is a file. To have
+  `vaultmcp lock` stop every agent on a machine, keep the key in the OS
+  keychain there and do not set the variable.
+- Not verified on Windows: Git Bash's default window is expected to report
+  no terminal to a native program. If so, every prompt here (`set`, `lock`,
+  `unlock`, `recover`) has to be run from cmd, PowerShell or under `winpty`.
 - While a vault is locked with `vaultmcp lock`, the hook stops agent tool
   calls. In every other case it still never blocks.
 - The first `vaultmcp set` prints a recovery code on stderr when a person is

@@ -1355,6 +1355,19 @@ func TestOutOfReachWarningNamesAFixThatWorks(t *testing.T) {
 			t.Fatalf("got %q", got)
 		}
 	})
+	t.Run("no key.enc and no recovery file: nothing to advise", func(t *testing.T) {
+		v, _ := keychainVault(t)
+		if err := keyring.DeleteFromKeychain(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(v.p.Recovery); err != nil {
+			t.Fatal(err)
+		}
+		got := hookSays(t, v.p, claudeEvent, testNow)
+		if !strings.Contains(got, "NOT being hidden") || strings.Contains(got, "vaultmcp unlock") || strings.Contains(got, "vaultmcp recover") {
+			t.Fatalf("got %q", got)
+		}
+	})
 	t.Run("no key.enc: the recovery code is the way", func(t *testing.T) {
 		v, _ := keychainVault(t)
 		if err := keyring.DeleteFromKeychain(); err != nil {
@@ -1433,6 +1446,12 @@ func TestUnlockWithTheVariableNeedsAPersonToEndALock(t *testing.T) {
 	const pass = "a passphrase for tests"
 	for name, person := range map[string]func(t *testing.T){
 		"no terminal at all": func(t *testing.T) { terminal(t, false) },
+		"only stdin is a terminal": func(t *testing.T) {
+			terminal(t, false)
+			prev := stdinIsTerminal
+			stdinIsTerminal = func() bool { return true }
+			t.Cleanup(func() { stdinIsTerminal = prev })
+		},
 		"the answer is piped in": func(t *testing.T) {
 			terminal(t, true) // stderr is a terminal, stdin is not
 			prev := stdinIsTerminal
