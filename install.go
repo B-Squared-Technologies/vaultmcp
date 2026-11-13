@@ -338,13 +338,18 @@ func runsVaultHook(words []string) bool {
 // command text (after -c, /c or -Command), which is read as a command of its
 // own, or a script file, which is one word and is judged by its name. Words
 // after the script are the script's own and say nothing.
+//
+// sh and its kin take the command text from the one word after -c: any words
+// after that are its $0 and arguments, not part of the command. cmd.exe and
+// PowerShell take the rest of the line.
 func shellRunsVaultHook(shell string, args []string) bool {
-	for j, a := range args {
+	for j := 0; j < len(args); j++ {
+		a := args[j]
 		low := strings.ToLower(a)
 		switch {
 		case shell == "cmd":
 			if low == "/c" || low == "/k" {
-				return textRunsVaultHook(args[j+1:])
+				return restRunsVaultHook(args[j+1:])
 			}
 			if !strings.HasPrefix(a, "/") {
 				return false
@@ -354,12 +359,15 @@ func shellRunsVaultHook(shell string, args []string) bool {
 				return j+1 < len(args) && programName(args[j+1]) == "vaultmcp-hook"
 			}
 			if low == "-command" || low == "-c" {
-				return textRunsVaultHook(args[j+1:])
+				return restRunsVaultHook(args[j+1:])
 			}
 		case strings.HasPrefix(a, "--"):
-		case strings.HasPrefix(a, "-"):
+		case strings.HasPrefix(a, "-") || strings.HasPrefix(a, "+"):
 			if strings.Contains(a, "c") {
-				return textRunsVaultHook(args[j+1:])
+				return j+1 < len(args) && isVaultHook(args[j+1])
+			}
+			if strings.HasSuffix(a, "o") {
+				j++ // -o and -eo take an option's name next, which is not a script
 			}
 		default:
 			return programName(a) == "vaultmcp-hook"
@@ -368,9 +376,9 @@ func shellRunsVaultHook(shell string, args []string) bool {
 	return false
 }
 
-// textRunsVaultHook reads command text handed to a shell: one quoted word that
-// holds a whole command, or the rest of the line.
-func textRunsVaultHook(rest []string) bool {
+// restRunsVaultHook reads the rest of a line handed to cmd.exe or PowerShell
+// as command text: one quoted word that holds a whole command, or loose words.
+func restRunsVaultHook(rest []string) bool {
 	return len(rest) > 0 && (isVaultHook(rest[0]) || runsVaultHook(rest))
 }
 

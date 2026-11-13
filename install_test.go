@@ -290,7 +290,11 @@ func TestIsVaultHook(t *testing.T) {
 		`bash "/Users/Jo Smith/.claude/hooks/vaultmcp-hook.sh"`:         true,
 		"pwsh -ExecutionPolicy Bypass -File C:/tools/vaultmcp-hook.ps1": true,
 		`cmd /c C:\tools\vaultmcp.exe hook`:                             true,
-		"bash -c 'true' vaultmcp-hook":                                  false,
+		"bash -o pipefail -c '/usr/local/bin/vaultmcp hook'":            true,
+		"bash -eo pipefail -c '/usr/local/bin/vaultmcp hook'":           true,
+		// sh runs only the word after -c. "hook" here is $0, not an argument.
+		"sh -c '/bin/vaultmcp' hook":   false,
+		"bash -c 'true' vaultmcp-hook": false,
 		// Empty words, which a shell allows.
 		"bash -c ''":                                     false,
 		`cmd /c start "" C:/x.exe`:                       false,
