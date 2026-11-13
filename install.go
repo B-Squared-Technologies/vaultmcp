@@ -244,13 +244,19 @@ func isVaultHook(cmd string) bool {
 }
 
 // hookWord takes the quotes off one word of a command and cuts it where a
-// redirect or a separator is written straight onto it, as in "hook>>log".
+// redirect or a separator is written straight onto it, as in "hook>>log". A
+// character inside quotes or behind a backslash is part of a file name (a
+// folder called R&D) and is not cut at.
 func hookWord(w string) string {
-	w = strings.Trim(w, `'"`)
-	if i := strings.IndexAny(w, "<>;&|"); i >= 0 {
-		w = w[:i]
+	if !strings.HasPrefix(w, "'") && !strings.HasPrefix(w, `"`) {
+		for i := 0; i < len(w); i++ {
+			if strings.IndexByte("<>;&|", w[i]) >= 0 && (i == 0 || w[i-1] != '\\') {
+				w = w[:i]
+				break
+			}
+		}
 	}
-	return w
+	return strings.Trim(w, `'"`)
 }
 
 // removeVaultHook takes the vaultmcp command out of event's matcher entries.
