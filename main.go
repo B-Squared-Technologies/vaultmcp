@@ -31,7 +31,7 @@ Usage:
   vaultmcp audit [--last N]      Show the audit log
   vaultmcp lock                  Move the key out of the OS keychain into key.enc, behind a passphrase
   vaultmcp unlock                Ask for the passphrase and put the key back in the OS keychain
-  vaultmcp recovery-code         Make a recovery code (or a new one), shown once
+  vaultmcp recovery-code         Make a recovery code, shown once (--replace for a new one)
   vaultmcp recover               Bring the key back with the recovery code
   vaultmcp install [--global]    Register hooks (project .claude, or ~/.claude + Codex/Cursor with --global)
   vaultmcp export-aliases        Print alias list for CLAUDE.md

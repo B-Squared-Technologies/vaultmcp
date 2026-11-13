@@ -44,15 +44,16 @@ secrets never expire. The README section "Named secrets and captures" has
 the exact rules. If you want to keep a captured value, store it under a
 name.
 
-**Every vault gets a recovery code.** One key seals everything, and until
+**Vaults have a recovery code.** One key seals everything, and until
 now nothing could replace it. The first `vaultmcp set` now also shows a
 recovery code, once. `vaultmcp recover` uses it to bring the same key back.
 Existing vaults: run `vaultmcp recovery-code` and save what it prints.
 
-**`lock` and `unlock` are a real pair.** `lock` moves the key from the OS
-keychain into `key.enc` behind a passphrase, and `unlock` moves it back. The
-key is never deleted. Before, `unlock` stored nothing and `lock` only
-deleted.
+**`lock` and `unlock` are a real pair.** `lock` takes the key out of the OS
+keychain and leaves it in `key.enc` behind a passphrase, and `unlock` puts
+it back. The key is never deleted. Before, `unlock` stored nothing and
+`lock` only deleted. Both ask for the passphrase at a prompt, so a script or
+an agent cannot run them.
 
 **The hook says when it is not protecting you.** It used to stay silent
 whenever it could not reach the key. Now a vault you locked on purpose stops
@@ -63,7 +64,8 @@ agent tool calls until you unlock it, and a key that is merely out of reach
 
 - `vaultmcp list --captured` lists what the hook captured.
 - `vaultmcp prune [--dry-run]` deletes expired captures.
-- `vaultmcp recovery-code` makes a recovery code, or a new one.
+- `vaultmcp recovery-code` makes a recovery code. With `--replace` it makes
+  a new one in place of the old.
 - `vaultmcp recover` brings the key back with it.
 - `vaultmcp migrate-captures [--apply] [--names]` moves captures made by
   older versions out of `store.enc`. It backs the file up first, shows what
@@ -106,6 +108,8 @@ captures are sealed with a key derived from it.
 - If two hooks repair the same damaged capture file in the same moment and
   something reads it in between, its "used" mark can be lost, and that
   capture then expires after 7 days where it would have had 30.
+- An agent that runs `vaultmcp recovery-code` gets the code in its
+  transcript. Run it yourself.
 - Grok and Cursor give a hook no documented way to show a warning on a
   call it allows. When the key is out of reach there, the hook is silent.
 - The OS keychain holds one VaultMCP key per user, not one per vault

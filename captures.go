@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -45,13 +47,20 @@ func runHook(stdin []byte, stdout io.Writer, p vault.Paths, now time.Time) {
 		case fileExists(p.Locked):
 			// Locked on purpose. The owner wants nothing near the secrets, and
 			// an agent running with redaction off is the opposite, so the
-			// call is stopped. This is the only case in which the hook blocks.
-			write(stdout, hook.Stop(stdin, "VaultMCP: the vault is locked, so secrets cannot be hidden and this tool call was stopped. Run 'vaultmcp unlock' in a terminal, then try again."))
+			// call is stopped. The hook blocks only for a vault that was
+			// locked on purpose and whose key it cannot use.
+			write(stdout, hook.Stop(stdin, lockedMessage))
 		case fileExists(p.Key) || holdsSecrets(p):
 			// A vault that is in use, but its key is out of reach (a keychain
 			// this session cannot see, a passphrase that was not exported).
-			// The call goes ahead, and the person is told.
-			warn(stdout, stdin, p, now, "VaultMCP cannot reach the vault key in this session, so secrets are NOT being hidden. Run 'vaultmcp status' in a terminal to see why.")
+			// The call goes ahead, and the person is told why here: `status`
+			// run in a terminal that does have the passphrase would say that
+			// all is well.
+			why := "this session has no VAULTMCP_KEY and no vault key was found in the OS keychain"
+			if os.Getenv("VAULTMCP_KEY") != "" {
+				why = "VAULTMCP_KEY is set in this session but does not open key.enc"
+			}
+			warn(stdout, stdin, p, now, "VaultMCP cannot reach the vault key ("+why+"), so secrets are NOT being hidden.")
 		}
 		// Otherwise the vault was never set up: nothing to say.
 		return
@@ -67,9 +76,16 @@ func runHook(stdin []byte, stdout io.Writer, p vault.Paths, now time.Time) {
 	})
 	storeFailed := false
 	out := hook.Process(stdin, hook.Deps{Paths: p, MasterKey: key, CaptureKey: capKey, ExePath: exe, Now: now, StoreFailed: func() { storeFailed = true }})
-	write(stdout, out)
-	if storeFailed {
-		// A key was found, but it is not this vault's: the keychain holds
+	switch {
+	case !storeFailed:
+		write(stdout, out)
+	case fileExists(p.Locked):
+		// A key was found, but it is not this vault's (the keychain entry is
+		// one per user, and another folder's key is in it), and this vault
+		// was locked on purpose. Another vault being open must not undo that.
+		write(stdout, hook.Stop(stdin, lockedMessage))
+	default:
+		// Not this vault's key, and nobody locked it: the keychain holds
 		// another folder's key, or VAULTMCP_KEY opens a key.enc that was
 		// made over an existing vault.
 		warn(stdout, stdin, p, now, "VaultMCP found a key, but it does not open this vault (store.enc), so secrets are NOT being hidden. Run 'vaultmcp status' in a terminal.")
@@ -86,17 +102,25 @@ func write(w io.Writer, out []byte) {
 	}
 }
 
+const lockedMessage = "VaultMCP: the vault is locked, so secrets cannot be hidden and this tool call was stopped. Run 'vaultmcp unlock' in a terminal, then try again."
+
 // warnEvery is how often the hook repeats a warning that redaction is off. It
 // runs on every tool call, and a warning on every one would be noise that
 // teaches people to ignore it.
 const warnEvery = 10 * time.Minute
 
 // warn shows msg to the person through the hook answer, at most once every
-// warnEvery. The time of the last warning is the mtime of a marker file in
-// the vault folder. If that file cannot be written the warning is shown
-// anyway: said too often is better than never said.
+// warnEvery in each agent session: a warning one session used up would
+// otherwise never reach the person sitting at another. The time of the last
+// warning is the mtime of a marker file in the vault folder. If that file
+// cannot be written the warning is shown anyway: said too often is better
+// than never said.
 func warn(w io.Writer, stdin []byte, p vault.Paths, now time.Time, msg string) {
 	marker := filepath.Join(p.Dir, "warned")
+	if id := hook.SessionID(stdin); id != "" {
+		sum := sha256.Sum256([]byte(id))
+		marker += "-" + hex.EncodeToString(sum[:6])
+	}
 	if fi, err := os.Stat(marker); err == nil {
 		if age := now.Sub(fi.ModTime()); age >= 0 && age < warnEvery {
 			return
@@ -110,6 +134,13 @@ func warn(w io.Writer, stdin []byte, p vault.Paths, now time.Time, msg string) {
 		_ = os.Chtimes(marker, now, now)
 	}
 	write(w, out)
+	// Sessions end and their markers stay. Clear out the day-old ones.
+	old, _ := filepath.Glob(filepath.Join(p.Dir, "warned-*"))
+	for _, f := range old {
+		if fi, err := os.Stat(f); err == nil && now.Sub(fi.ModTime()) > 24*time.Hour {
+			_ = os.Remove(f)
+		}
+	}
 }
 
 // auditPrune leaves one audit line for a prune that deleted something. Expiry

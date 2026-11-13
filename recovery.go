@@ -202,16 +202,29 @@ func offerRecovery(p vault.Paths, master []byte) {
 // stdout, so it can be piped straight into a password manager without ever
 // being on screen.
 func cmdRecoveryCode(args []string) error {
-	if len(args) > 0 {
-		return fmt.Errorf("unknown argument %q: usage: vaultmcp recovery-code", args[0])
+	replace := false
+	for _, a := range args {
+		if a != "--replace" {
+			return errors.New("unexpected argument: usage: vaultmcp recovery-code [--replace]")
+		}
+		replace = true
 	}
 	p := paths()
+	// A new code ends the one the owner saved. That must be asked for by
+	// name, so that a second run "to see the code again", or a script, cannot
+	// quietly leave the vault with a code nobody holds.
+	if fileExists(p.Recovery) && !replace {
+		return errors.New("this vault already has a recovery code, and it cannot be shown again. A new one stops the saved one from opening this vault. If that is what you want, run 'vaultmcp recovery-code --replace'")
+	}
 	master, err := masterKeyInteractive(p, false)
 	if err != nil {
-		if errors.Is(err, errLocked) {
-			return errors.New("there is no vault key to make a recovery code for yet. Store a secret first with 'vaultmcp set'")
+		if !errors.Is(err, errLocked) {
+			return err
 		}
-		return err
+		if holdsSecrets(p) {
+			return errors.New("this vault's key cannot be found, so no recovery code can be made for it. If you saved a recovery code earlier, run 'vaultmcp recover'")
+		}
+		return errors.New("there is no vault key to make a recovery code for yet. Store a secret first with 'vaultmcp set'")
 	}
 	if !opensStore(p, master) {
 		return errors.New("the key that was found does not open this vault's store.enc, so a recovery code for it would recover nothing here. Nothing was changed. The OS keychain may hold another vault folder's key, or VAULTMCP_KEY may not be this vault's passphrase: run 'vaultmcp status'")
@@ -272,7 +285,8 @@ func cmdRecover(args []string) error {
 		_ = os.Remove(p.Locked)
 	case fileExists(p.Locked):
 		fmt.Println("  The vault is still locked, because the key is not in the OS keychain: agent tool")
-		fmt.Println("  calls stay stopped. Run 'vaultmcp unlock'.")
+		fmt.Println("  calls stay stopped. Run 'vaultmcp unlock'. If the keychain keeps refusing the key,")
+		fmt.Println("  set VAULTMCP_KEY to the passphrase and run it again.")
 	}
 	return nil
 }

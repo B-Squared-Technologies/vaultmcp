@@ -570,6 +570,13 @@ func Stop(stdin []byte, reason string) []byte {
 	return b
 }
 
+// SessionID returns the agent session the hook event in stdin belongs to, or
+// "" if it names none.
+func SessionID(stdin []byte) string {
+	env, _ := parseEnvelope(stdin)
+	return env.Session
+}
+
 // Warn returns a hook answer that lets the tool call in stdin go ahead and
 // shows msg to the person at the screen. Claude and Codex document a field
 // for that on PreToolUse. Grok shows nothing from a hook that allowed, and

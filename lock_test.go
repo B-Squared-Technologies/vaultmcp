@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -201,8 +202,15 @@ func TestNoRecoveryCodeIsPrintedIntoALog(t *testing.T) {
 
 func TestRecoveryCodeCommandReplacesTheOldCode(t *testing.T) {
 	v, first := keychainVault(t)
-	var err error
-	stdout, stderr := output(t, func() { err = cmdRecoveryCode(nil) })
+	// Without --replace the saved code is left alone.
+	err := cmdRecoveryCode(nil)
+	if err == nil || !strings.Contains(err.Error(), "--replace") {
+		t.Fatalf("a second recovery-code without --replace: err = %v, want a refusal", err)
+	}
+	if _, err := openRecovery(v.p, first); err != nil {
+		t.Fatal("a refused recovery-code ended the saved code")
+	}
+	stdout, stderr := output(t, func() { err = cmdRecoveryCode([]string{"--replace"}) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -555,6 +563,11 @@ func hookSays(t *testing.T, p vault.Paths, event string, now time.Time) string {
 	t.Helper()
 	var out bytes.Buffer
 	runHook([]byte(event), &out, p, now)
+	// One JSON document or nothing: two answers run together would still
+	// contain whatever a test looks for, and no agent tool would accept them.
+	if out.Len() > 0 && !json.Valid(out.Bytes()) {
+		t.Errorf("the hook's answer is not one JSON document: %s", out.String())
+	}
 	return out.String()
 }
 
@@ -640,6 +653,11 @@ func TestHookWarnsWhenTheKeyIsOutOfReach(t *testing.T) {
 	if got := hookSays(t, v.p, claudeEvent, testNow.Add(warnEvery-time.Second)); got != "" {
 		t.Fatalf("the warning was repeated inside %s: %s", warnEvery, got)
 	}
+	// Another session has not been told yet.
+	other := strings.Replace(claudeEvent, `"session_id":"s"`, `"session_id":"t"`, 1)
+	if got := hookSays(t, v.p, other, testNow.Add(time.Minute)); !strings.Contains(got, `"systemMessage"`) || !strings.Contains(got, "no VAULTMCP_KEY") {
+		t.Fatalf("a second session was not warned, or not told why: %s", got)
+	}
 	if got := hookSays(t, v.p, claudeEvent, testNow.Add(warnEvery+time.Second)); !strings.Contains(got, `"systemMessage"`) {
 		t.Fatalf("the warning was not repeated after %s: %s", warnEvery, got)
 	}
@@ -677,7 +695,7 @@ func TestCommandsRefuseAKeyThatDoesNotOpenTheStore(t *testing.T) {
 	if err := keyring.ToKeychain(other); err != nil {
 		t.Fatal(err)
 	}
-	if err := cmdRecoveryCode(nil); err == nil || !strings.Contains(err.Error(), "does not open this vault's store.enc") {
+	if err := cmdRecoveryCode([]string{"--replace"}); err == nil || !strings.Contains(err.Error(), "does not open this vault's store.enc") {
 		t.Fatalf("recovery-code: err = %v, want a refusal", err)
 	}
 	if _, err := openRecovery(v.p, code); err != nil {
@@ -728,7 +746,8 @@ func TestRecoverKeepsTheOldKeyFileWhenTheNewOneFails(t *testing.T) {
 
 // The key is already out of the keychain, but no lock was ever declared (a
 // passphrase vault whose VAULTMCP_KEY was taken away). `lock` declares it, and
-// from then on the hook stops tool calls.
+// from then on the hook stops tool calls. Declaring it takes the passphrase:
+// a script or an agent's shell must not be able to stop every agent session.
 func TestLockDeclaresALockWhenTheKeyIsAlreadyOut(t *testing.T) {
 	v, _ := keychainVault(t)
 	answers(t, "a passphrase for the lock")
@@ -741,13 +760,37 @@ func TestLockDeclaresALockWhenTheKeyIsAlreadyOut(t *testing.T) {
 	if got := hookSays(t, v.p, claudeEvent, testNow); strings.Contains(got, "deny") {
 		t.Fatalf("with no marker the hook must not stop the call: %s", got)
 	}
-	var err error
+
+	old := askSecret
+	askSecret = func(string, bool) (string, error) { return "", errors.New("not a terminal") }
+	err := cmdLock(nil)
+	askSecret = old
+	if err == nil || fileExists(v.p.Locked) {
+		t.Fatalf("lock with nobody to type the passphrase: err = %v, marker = %v", err, fileExists(v.p.Locked))
+	}
+	answers(t, "not the passphrase")
+	if err := cmdLock(nil); err == nil || fileExists(v.p.Locked) {
+		t.Fatalf("lock with a wrong passphrase: err = %v, marker = %v", err, fileExists(v.p.Locked))
+	}
+
+	answers(t, "a passphrase for the lock")
 	stdout, _ := output(t, func() { err = cmdLock(nil) })
-	if err != nil || !strings.Contains(stdout, "already locked") || !fileExists(v.p.Locked) {
+	if err != nil || !strings.Contains(stdout, "vault locked") || !fileExists(v.p.Locked) {
 		t.Fatalf("err=%v marker=%v out=%q", err, fileExists(v.p.Locked), stdout)
 	}
 	if got := hookSays(t, v.p, claudeEvent, testNow); !strings.Contains(got, `"permissionDecision":"deny"`) {
 		t.Fatalf("after lock the hook must stop the call: %s", got)
+	}
+
+	// Without a recovery code it is refused here too.
+	if err := os.Remove(v.p.Locked); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(v.p.Recovery); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdLock(nil); err == nil || !strings.Contains(err.Error(), "no recovery code") || fileExists(v.p.Locked) {
+		t.Fatalf("lock without a recovery code: err = %v", err)
 	}
 }
 
@@ -864,5 +907,76 @@ func TestKeychainPutLeavesAnotherKeyAlone(t *testing.T) {
 	}
 	if err := keychainPut(mine); err == nil || !bytes.Equal(keychainKey(t), other) {
 		t.Fatalf("another key was written over: err = %v", err)
+	}
+}
+
+// A vault locked on purpose stays stopped when another vault folder's key
+// turns up in the keychain: that key hides nothing here.
+func TestLockedVaultStaysStoppedWhenAnotherKeyIsInTheKeychain(t *testing.T) {
+	v, _ := keychainVault(t)
+	answers(t, "a passphrase for the lock")
+	if err := cmdLock(nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := keyring.ToKeychain(crypto.NewKey()); err != nil {
+		t.Fatal(err)
+	}
+	for name, event := range map[string]string{"claude": claudeEvent, "grok": grokEvent} {
+		if got := hookSays(t, v.p, event, testNow); !strings.Contains(got, `"permissionDecision":"deny"`) {
+			t.Errorf("%s: a locked vault let a call through: %s", name, got)
+		}
+	}
+	if got := hookSays(t, v.p, cursorEvent, testNow); !strings.Contains(got, `"permission":"deny"`) {
+		t.Errorf("cursor: a locked vault let a call through: %s", got)
+	}
+}
+
+// status tries the passphrase. "unlocked" for a VAULTMCP_KEY that opens
+// nothing would send away the very person the hook sent here.
+func TestStatusTriesThePassphrase(t *testing.T) {
+	useMockKeychain(t)
+	terminal(t, false)
+	newTestVault(t)
+	t.Setenv("VAULTMCP_KEY", "a passphrase for tests")
+	if err := cmdSet([]string{"MINE", "value-one"}); err != nil {
+		t.Fatal(err)
+	}
+	status, _ := output(t, func() { _ = cmdStatus(nil) })
+	if !strings.Contains(status, "unlocked (VAULTMCP_KEY)") || strings.Contains(status, "WARNING: VAULTMCP_KEY") {
+		t.Fatalf("with the right passphrase:\n%s", status)
+	}
+	t.Setenv("VAULTMCP_KEY", "not the passphrase")
+	status, _ = output(t, func() { _ = cmdStatus(nil) })
+	if strings.Contains(status, "unlocked") || !strings.Contains(status, "does not open key.enc") {
+		t.Fatalf("with a wrong passphrase:\n%s", status)
+	}
+}
+
+// What follows `lock` or `unlock` may be a passphrase typed by mistake. It is
+// not repeated on screen.
+func TestLockAndUnlockDoNotEchoTheirArgument(t *testing.T) {
+	useMockKeychain(t)
+	newTestVault(t)
+	for name, cmd := range map[string]func([]string) error{"lock": cmdLock, "unlock": cmdUnlock} {
+		err := cmd([]string{"typed-by-mistake"})
+		if err == nil || strings.Contains(err.Error(), "typed-by-mistake") {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+}
+
+// A vault whose key is gone is not told to "store a secret first".
+func TestMessagesWhenTheKeyIsLost(t *testing.T) {
+	keychainVault(t)
+	if err := keyring.DeleteFromKeychain(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdRecoveryCode([]string{"--replace"}); err == nil || !strings.Contains(err.Error(), "vaultmcp recover") {
+		t.Fatalf("recovery-code: err = %v", err)
+	}
+	var err error
+	stdout, _ := output(t, func() { err = cmdLock(nil) })
+	if err != nil || !strings.Contains(stdout, "nothing to lock") || !strings.Contains(stdout, "vaultmcp recover") {
+		t.Fatalf("lock: err=%v out=%q", err, stdout)
 	}
 }

@@ -28,8 +28,18 @@ func cmdStatus(args []string) error {
 	// Session / key — mirror the resolver's precedence: VAULTMCP_KEY wins
 	// over the keychain, so report it first.
 	_, inKeychain := keyring.FromKeychain()
+	// The passphrase is tried, not just looked for: the hook sends people
+	// here to find out why it cannot reach the key.
+	env, envOpens := os.Getenv("VAULTMCP_KEY"), false
+	if env != "" && fileExists(p.Key) {
+		_, err := keyring.UnwrapFromFile(p.Key, env)
+		envOpens = err == nil
+	}
+	if env != "" && !envOpens {
+		fmt.Printf("  session: WARNING: VAULTMCP_KEY is set, but %s\n", tern(fileExists(p.Key), "it does not open key.enc (not this vault's passphrase)", "there is no key.enc for it to open"))
+	}
 	switch {
-	case os.Getenv("VAULTMCP_KEY") != "":
+	case envOpens:
 		fmt.Println("  session: unlocked (VAULTMCP_KEY)")
 	case inKeychain:
 		fmt.Println("  session: unlocked (OS keychain)")

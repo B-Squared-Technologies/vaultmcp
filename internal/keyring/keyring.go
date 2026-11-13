@@ -2,7 +2,8 @@
 //
 // Two modes (see PLAN):
 //   - Keychain mode (default): the master key lives in the OS keychain via
-//     go-keyring. Nothing secret touches disk; the per-tool-call hook fetches
+//     go-keyring. The key is on disk only in sealed form (recovery.enc, and
+//     key.enc once the vault has been locked); the per-tool-call hook fetches
 //     it directly with no Argon2id cost.
 //   - Passphrase mode (fallback): the master key is wrapped by an Argon2id KEK
 //     and stored in key.enc. The passphrase itself is never written to disk.
