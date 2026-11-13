@@ -223,20 +223,34 @@ func ensureCursorHook(hooks map[string]any, event, command string) bool {
 // A command that only has "vaultmcp" somewhere in a path is somebody else's
 // hook. Taking it for ours meant install skipped its own registration because
 // of it, and removed it when cleaning up.
+//
+// This reads words, not shell grammar. A command that merely prints the words
+// "vaultmcp hook" would pass for ours; no parser short of a shell's own rules
+// that out, and install has to stay able to read a command a person edited.
 func isVaultHook(cmd string) bool {
 	words := strings.Fields(cmd)
 	for i, w := range words {
-		w = strings.Trim(w, `'"`)
+		w = hookWord(w)
 		name := strings.ToLower(w[strings.LastIndexAny(w, `/\`)+1:])
 		name = strings.TrimSuffix(name, ".exe")
 		if name == "vaultmcp-hook" {
 			return true
 		}
-		if name == "vaultmcp" && i+1 < len(words) && strings.Trim(words[i+1], `'"`) == "hook" {
+		if name == "vaultmcp" && i+1 < len(words) && hookWord(words[i+1]) == "hook" {
 			return true
 		}
 	}
 	return false
+}
+
+// hookWord takes the quotes off one word of a command and cuts it where a
+// redirect or a separator is written straight onto it, as in "hook>>log".
+func hookWord(w string) string {
+	w = strings.Trim(w, `'"`)
+	if i := strings.IndexAny(w, "<>;&|"); i >= 0 {
+		w = w[:i]
+	}
+	return w
 }
 
 // removeVaultHook takes the vaultmcp command out of event's matcher entries.
