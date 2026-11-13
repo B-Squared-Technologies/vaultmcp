@@ -289,7 +289,9 @@ func cmdUnlock(args []string) error {
 			return errWrongKeyFile(p)
 		}
 		wasLocked := fileExists(p.Locked)
-		_ = endLock(p)
+		if err := endLock(p); err != nil {
+			return fmt.Errorf("VAULTMCP_KEY opens this vault, but the lock marker could not be removed, so agent tool calls in programs that were not given it stay stopped: %w", err)
+		}
 		if wasLocked {
 			fmt.Println("  the lock is ended: VAULTMCP_KEY opens this vault, and agent tool calls in programs that were not given it are no longer stopped")
 		} else {

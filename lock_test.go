@@ -1405,3 +1405,21 @@ func TestUnlockWithTheVariableSaysItEndedALock(t *testing.T) {
 		t.Fatal("the marker is still there")
 	}
 }
+
+// The marker cannot be removed. unlock must not say the lock is ended.
+func TestUnlockWithTheVariableReportsAMarkerItCouldNotRemove(t *testing.T) {
+	v := envVault(t)
+	terminal(t, false)
+	// A folder with something in it, where the marker file would be.
+	if err := os.MkdirAll(filepath.Join(v.p.Locked, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	stdout, _ := output(t, func() { err = cmdUnlock(nil) })
+	if err == nil || !strings.Contains(err.Error(), "could not be removed") {
+		t.Fatalf("err = %v", err)
+	}
+	if strings.Contains(stdout, "the lock is ended") {
+		t.Fatalf("stdout = %q", stdout)
+	}
+}
