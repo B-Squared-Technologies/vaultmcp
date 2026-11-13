@@ -216,27 +216,53 @@ func isShellTool(name string) bool {
 }
 
 func (d Deps) sub(alias string) string {
-	return "$(" + ShellPath(d.ExePath, runtime.GOOS == "windows") + " get " + alias + ")"
+	s := "$(" + shellPath(d.ExePath, runtime.GOOS == "windows") + " get " + alias + ")"
+	// The substitution is put into tool input that is still JSON text, inside
+	// one of its strings. A backslash or a double quote from the path has to
+	// be escaped for JSON first, or the rewrite stops being valid JSON and is
+	// thrown away, and the secret goes through unhidden.
+	b, err := json.Marshal(s)
+	if err != nil {
+		return s
+	}
+	return string(b[1 : len(b)-1])
 }
 
-// plainPath matches a path a shell reads as one word with nothing to expand.
-var plainPath = regexp.MustCompile(`^[A-Za-z0-9_./:-]+$`)
+// plainPathByte reports whether a shell reads c as an ordinary character of a
+// word, with nothing to split on or expand.
+func plainPathByte(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return true
+	}
+	return strings.IndexByte("_./:-", c) >= 0
+}
 
-// ShellPath writes a path so that the shell running the command it is put
-// into reads it back as that one path. A plain path goes in as it is, so
-// most commands look the way they always did. Anything else (a space in a
-// user's name is the common case) is single-quoted. On Windows the shell is
-// Git Bash, which takes a backslash as an escape and drops it, so backslashes
-// become forward slashes there; elsewhere a backslash is an ordinary character
-// of a file name and is kept, inside the quotes.
-func ShellPath(p string, windows bool) string {
+// shellPath writes a path so that the shell running the command it is put
+// into reads it back as that one path: every ASCII character a shell could
+// treat specially (a space in a user's name is the common case) gets a
+// backslash in front. A plain path comes out as it went in, so most commands
+// look the way they always did.
+//
+// Quotes are not used, on purpose. The substitution often lands inside a
+// string the command already quoted, and a quote of ours would end that
+// string early and hand the shell the rest as loose words.
+//
+// On Windows the shell is Git Bash, which takes a backslash as an escape, so
+// backslashes become forward slashes there first. Elsewhere a backslash is an
+// ordinary character of a file name and is escaped like the rest.
+func shellPath(p string, windows bool) string {
 	if windows {
 		p = strings.ReplaceAll(p, `\`, "/")
 	}
-	if plainPath.MatchString(p) {
-		return p
+	var b strings.Builder
+	for i := 0; i < len(p); i++ {
+		if c := p[i]; c < 0x80 && !plainPathByte(c) {
+			b.WriteByte('\\')
+		}
+		b.WriteByte(p[i])
 	}
-	return "'" + strings.ReplaceAll(p, "'", `'\''`) + "'"
+	return b.String()
 }
 
 // known reports whether alias resolves: a named secret, or a capture file.

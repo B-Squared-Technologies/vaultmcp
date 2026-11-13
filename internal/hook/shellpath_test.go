@@ -1,6 +1,7 @@
 package hook
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,16 +17,60 @@ func TestShellPath(t *testing.T) {
 		want     string
 	}{
 		{"plain", "/usr/local/bin/vaultmcp", false, "/usr/local/bin/vaultmcp"},
-		{"a space", "/Users/jo smith/bin/vaultmcp", false, "'/Users/jo smith/bin/vaultmcp'"},
-		{"a quote", "/Users/o'neil/vaultmcp", false, `'/Users/o'\''neil/vaultmcp'`},
-		{"a dollar", "/opt/$HOME/vaultmcp", false, "'/opt/$HOME/vaultmcp'"},
+		{"a space", "/Users/jo smith/bin/vaultmcp", false, `/Users/jo\ smith/bin/vaultmcp`},
+		{"an apostrophe", "/Users/o'neil/vaultmcp", false, `/Users/o\'neil/vaultmcp`},
+		{"a double quote", `/Users/o"neil/vaultmcp`, false, `/Users/o\"neil/vaultmcp`},
+		{"a dollar", "/opt/$HOME/vaultmcp", false, `/opt/\$HOME/vaultmcp`},
+		{"an ampersand", "/opt/R&D/vaultmcp", false, `/opt/R\&D/vaultmcp`},
+		{"not ASCII", "/Users/zoë/vaultmcp", false, "/Users/zoë/vaultmcp"},
 		{"windows", `C:\Users\jo\bin\vaultmcp.exe`, true, "C:/Users/jo/bin/vaultmcp.exe"},
-		{"windows, a space", `C:\Users\Jo Smith\vaultmcp.exe`, true, "'C:/Users/Jo Smith/vaultmcp.exe'"},
-		// Off Windows a backslash is part of a file name. It is kept, quoted.
-		{"a backslash off windows", `/opt/odd\name/vaultmcp`, false, `'/opt/odd\name/vaultmcp'`},
+		{"windows, a space", `C:\Users\Jo Smith\vaultmcp.exe`, true, `C:/Users/Jo\ Smith/vaultmcp.exe`},
+		// Off Windows a backslash is part of a file name, so it is escaped.
+		{"a backslash off windows", `/opt/odd\name/vaultmcp`, false, `/opt/odd\\name/vaultmcp`},
 	} {
-		if got := ShellPath(c.in, c.windows); got != c.want {
-			t.Errorf("%s: ShellPath(%q) = %s, want %s", c.name, c.in, got, c.want)
+		if got := shellPath(c.in, c.windows); got != c.want {
+			t.Errorf("%s: shellPath(%q) = %s, want %s", c.name, c.in, got, c.want)
+		}
+	}
+}
+
+// The substitution is written into tool input that is still JSON text. With a
+// path that needs escaping, a rewrite that is not valid JSON is thrown away
+// and the secret goes through unhidden, with nothing to show for it. Every
+// path here has to come back as a rewrite, and decode to the exact command.
+func TestSubstitutionWithAnAwkwardBinaryPathStaysValidJSON(t *testing.T) {
+	for _, exe := range []string{
+		"/Users/jo smith/bin/vaultmcp",
+		"/Users/o'neil/bin/vaultmcp",
+		`/Users/o"neil/bin/vaultmcp`,
+		`/opt/odd\name/vaultmcp`,
+		`/opt/odd\qame/vaultmcp`,
+		"/opt/R&D <x>/vaultmcp",
+	} {
+		d := testDeps(t)
+		d.ExePath = exe
+		out := runPre(t, d, "Bash", `{"command":"aws configure set key `+awsKey+`"}`)
+		if out == "" {
+			t.Errorf("%s: the hook gave no rewrite, so the secret went through", exe)
+			continue
+		}
+		if strings.Contains(out, awsKey) {
+			t.Errorf("%s: the secret is still in the answer: %s", exe, out)
+		}
+		var got struct {
+			HookSpecificOutput struct {
+				UpdatedInput struct {
+					Command string `json:"command"`
+				} `json:"updatedInput"`
+			} `json:"hookSpecificOutput"`
+		}
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Errorf("%s: the answer is not JSON: %v\n%s", exe, err, out)
+			continue
+		}
+		want := "aws configure set key $(" + shellPath(exe, runtime.GOOS == "windows") + " get " + awsAlias(d) + ")"
+		if got.HookSpecificOutput.UpdatedInput.Command != want {
+			t.Errorf("%s: command = %s\nwant      %s", exe, got.HookSpecificOutput.UpdatedInput.Command, want)
 		}
 	}
 }
@@ -33,18 +78,36 @@ func TestShellPath(t *testing.T) {
 // TestHelperProcess is not a test: it is the program the next test runs.
 func TestHelperProcess(t *testing.T) {
 	if os.Getenv("VAULTMCP_TEST_HELPER") == "1" {
-		os.Stdout.WriteString("ran")
+		_, _ = os.Stdout.WriteString("ran")
 		os.Exit(0)
 	}
 }
 
-// The rewritten command has to run in a real shell: on Windows that is Git
-// Bash, handed a path with backslashes and, here, a space.
-func TestShellPathRunsInARealShell(t *testing.T) {
-	bash, err := exec.LookPath("bash")
-	if err != nil {
-		t.Skip("no bash on this machine")
+// realBash finds the shell the rewritten command runs in. On Windows that is
+// Git Bash, not the WSL launcher that can sit earlier on PATH. With no bash
+// the test is skipped, except on a CI runner: all three have one, and a skip
+// there would let the test go quiet without anyone noticing.
+func realBash(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		for _, p := range []string{`C:\Program Files\Git\bin\bash.exe`, `C:\Program Files\Git\usr\bin\bash.exe`} {
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
+		}
+	} else if p, err := exec.LookPath("bash"); err == nil {
+		return p
 	}
+	if os.Getenv("CI") != "" {
+		t.Fatal("no bash on a CI runner: this test must not be skipped there")
+	}
+	t.Skip("no bash on this machine")
+	return ""
+}
+
+// copySelf puts a copy of this test binary at dir/name and returns its path.
+func copySelf(t *testing.T, dir, name string) string {
+	t.Helper()
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -53,21 +116,52 @@ func TestShellPathRunsInARealShell(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exe := filepath.Join(t.TempDir(), "a folder", "vault mcp")
 	if runtime.GOOS == "windows" {
-		exe += ".exe"
+		name += ".exe"
 	}
-	if err := os.MkdirAll(filepath.Dir(exe), 0o700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	exe := filepath.Join(dir, name)
+	// #nosec G306 -- a program the test runs.
 	if err := os.WriteFile(exe, blob, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	script := "printf %s \"$(" + ShellPath(exe, runtime.GOOS == "windows") + " -test.run='^TestHelperProcess$')\""
-	cmd := exec.Command(bash, "-c", script)
-	cmd.Env = append(os.Environ(), "VAULTMCP_TEST_HELPER=1")
-	out, err := cmd.CombinedOutput()
-	if err != nil || !strings.HasPrefix(string(out), "ran") {
-		t.Fatalf("the shell did not run the binary at %q: %v\n%s\nscript: %s", exe, err, out, script)
+	return exe
+}
+
+// The rewritten command has to run in a real shell: on Windows that is Git
+// Bash, handed a path with backslashes. The path here also has a space, an
+// apostrophe and an ampersand in it.
+func TestShellPathRunsInARealShell(t *testing.T) {
+	bash := realBash(t)
+	windows := runtime.GOOS == "windows"
+	run := func(script string) string {
+		t.Helper()
+		cmd := exec.Command(bash, "-c", script)
+		cmd.Env = append(os.Environ(), "VAULTMCP_TEST_HELPER=1")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("the shell failed: %v\n%s\nscript: %s", err, out, script)
+		}
+		return string(out)
+	}
+
+	exe := copySelf(t, filepath.Join(t.TempDir(), "jo's R&D folder"), "vault mcp")
+	sub := "$(" + shellPath(exe, windows) + " -test.run=TestHelperProcess)"
+	if out := run("printf %s " + sub); out != "ran" {
+		t.Errorf("on its own: got %q from %s", out, sub)
+	}
+	if out := run(`printf %s "token ` + sub + `"`); out != "token ran" {
+		t.Errorf("inside double quotes: got %q from %s", out, sub)
+	}
+
+	// Inside single quotes the shell runs nothing, and the text has to stay
+	// the one word the command meant it to be. (An apostrophe in the path
+	// itself ends such a string whatever is done, so this path has none.)
+	exe = copySelf(t, filepath.Join(t.TempDir(), "a R&D folder"), "vault mcp")
+	sub = "$(" + shellPath(exe, windows) + " -test.run=TestHelperProcess)"
+	if out := run("set -- 'token " + sub + "'; printf %s $#"); out != "1" {
+		t.Errorf("inside single quotes: the text became %s words: %s", out, sub)
 	}
 }

@@ -22,13 +22,9 @@ vaultmcp install --global
 
 `vaultmcp install` without `--global` still writes only the project's `.claude/settings.json`.
 
-On a machine with `/bin/zsh`, `install` writes a small script, `vaultmcp-hook`, next to the binary and registers that script. An app opened from the Dock or a launcher does not load your shell settings, so a `VAULTMCP_KEY` exported in `~/.zshenv` would never reach a hook that app starts. The script loads `~/.zshenv` and then runs `vaultmcp hook`. Nothing `~/.zshenv` prints or reads reaches the hook's input or output. On Windows, with no `/bin/zsh`, or when the script cannot be written next to the binary, `install` registers the binary itself.
-
-Running `install` again brings an older registration up to date where it stands. Hooks that belong to other tools are left alone.
-
 No Go toolchain? Grab a prebuilt binary from the [releases page](https://github.com/B-Squared-Technologies/vaultmcp/releases), put it on your `PATH`, and run `vaultmcp install --global`.
 
-Restart each agent after install. Codex skips a new or changed hook until you trust it: open Codex, run `/hooks`, and trust the vaultmcp hook. `install` tells you when that applies.
+Restart each agent after install. Codex `/hooks` may ask you to trust the new file.
 
 ## How the hook is wired
 
@@ -42,7 +38,7 @@ You can paste the JSON by hand instead of using `install`. The hook needs no arg
 - Grok treats `PostToolUse` as passive: hook stdout is recorded but does not replace the result shown to the model. `cat .env` still reaches Grok; rely on Pre rewrite.
 - Codex PostToolUse cannot rewrite tool results (`updatedToolOutput` is not in the schema). Only PreToolUse is registered. Codex hooks can also be off (`[features] hooks = false`) or waiting on `/hooks` trust.
 - Fail-open: if VaultMCP errors, the tool call proceeds untouched. The one exception is a vault you locked yourself with `vaultmcp lock`: then every tool call is stopped until `vaultmcp unlock`.
-- When the hook cannot reach the vault key and nobody locked the vault (for example an app that never loaded `VAULTMCP_KEY` from your shell profile), secrets are not hidden. Claude and Codex show a warning that says why, at most once every 10 minutes in each session. Grok and Cursor have no documented way for a hook to show a warning on a call it allows, so there the hook stays silent: run `vaultmcp status` if in doubt.
+- When the hook cannot reach the vault key and nobody locked the vault (for example an app that never loaded `VAULTMCP_KEY` from your shell profile), secrets are not hidden. To fix that on any system with an OS keychain, open a terminal where `VAULTMCP_KEY` is not set, run `vaultmcp unlock`, and type the passphrase: the key then sits in the keychain, where every app can reach it. Claude and Codex show a warning that says why, at most once every 10 minutes in each session. Grok and Cursor have no documented way for a hook to show a warning on a call it allows, so there the hook stays silent: run `vaultmcp status` if in doubt.
 
 ## How it works
 
