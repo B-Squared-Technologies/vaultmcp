@@ -278,6 +278,10 @@ func TestIsVaultHook(t *testing.T) {
 		`"/opt/vaultmcp-hook scripts/audit.sh"`:          false,
 		"'/usr/local/bin/vaultmcp hook'":                 false,
 		"/usr/local/bin/vaultmcp; hook":                  false,
+		"/usr/local/bin/vaultmcp-darwin-arm64 hook":      true,
+		"C:/tools/vaultmcp-windows-amd64.exe hook":       true,
+		"/usr/local/bin/vaultmcp-darwin-arm64 status":    false,
+		"/usr/local/bin/myvaultmcp hook":                 false,
 		"/Users/jo/.local/bin/vaultmcp-hook":             true,
 		"/Users/me/gitrepos/vaultmcp/scripts/lint.sh":    false,
 		"python3 ~/.claude/hooks/vaultmcp-audit.py":      false,
@@ -383,5 +387,25 @@ func TestShellWords(t *testing.T) {
 				break
 			}
 		}
+	}
+}
+
+// A binary somebody renamed to something else entirely is still the one
+// running install. Its own command, already registered, is not added twice.
+func TestInstallIsIdempotentForARenamedBinary(t *testing.T) {
+	const command = "/usr/local/bin/vm hook"
+	hooks := map[string]any{}
+	if !ensureHook(hooks, "PreToolUse", command) {
+		t.Fatal("first run did not register")
+	}
+	if ensureHook(hooks, "PreToolUse", command) {
+		t.Fatal("second run registered the same command again")
+	}
+	if list := hooks["PreToolUse"].([]any); len(list) != 1 {
+		t.Fatalf("entries = %v", list)
+	}
+	cursor := map[string]any{}
+	if !ensureCursorHook(cursor, "preToolUse", command) || ensureCursorHook(cursor, "preToolUse", command) {
+		t.Fatal("Cursor: not registered exactly once")
 	}
 }

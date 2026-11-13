@@ -207,7 +207,7 @@ func ensureCursorHook(hooks map[string]any, event, command string) bool {
 	list, _ := hooks[event].([]any)
 	for _, entry := range list {
 		m, _ := entry.(map[string]any)
-		if cmd, _ := m["command"].(string); isVaultHook(cmd) {
+		if cmd, _ := m["command"].(string); cmd == command || isVaultHook(cmd) {
 			return false
 		}
 	}
@@ -216,7 +216,8 @@ func ensureCursorHook(hooks map[string]any, event, command string) bool {
 }
 
 // isVaultHook reports whether a registered hook command is vaultmcp's own: it
-// runs a program named vaultmcp with the argument "hook", or a script named
+// runs a program whose name starts with vaultmcp (the release binaries are
+// named vaultmcp-<os>-<arch>) with the argument "hook", or a script named
 // vaultmcp-hook that some setups put in front of the binary. Words around it
 // (a VAULTMCP_DIR=... in front, a redirect behind) do not change that.
 //
@@ -236,7 +237,7 @@ func isVaultHook(cmd string) bool {
 		if name == "vaultmcp-hook" {
 			return true
 		}
-		if name == "vaultmcp" && i+1 < len(words) && words[i+1] == "hook" {
+		if strings.HasPrefix(name, "vaultmcp") && i+1 < len(words) && words[i+1] == "hook" {
 			return true
 		}
 	}
@@ -350,7 +351,7 @@ func ensureHook(hooks map[string]any, event, command string) bool {
 		inner, _ := m["hooks"].([]any)
 		for _, h := range inner {
 			hm, _ := h.(map[string]any)
-			if cmd, _ := hm["command"].(string); isVaultHook(cmd) {
+			if cmd, _ := hm["command"].(string); cmd == command || isVaultHook(cmd) {
 				return false // already registered
 			}
 		}
