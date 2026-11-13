@@ -14,7 +14,6 @@ import (
 
 	"github.com/B-Squared-Technologies/vaultmcp/internal/audit"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/capture"
-	"github.com/B-Squared-Technologies/vaultmcp/internal/keyring"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/vault"
 	"golang.org/x/term"
 )
@@ -30,8 +29,10 @@ Usage:
   vaultmcp migrate-captures [--apply] [--names]  Move old hook captures out of store.enc (dry run without --apply)
   vaultmcp status                Show vault + hook health
   vaultmcp audit [--last N]      Show the audit log
-  vaultmcp unlock                Cache the key for this machine/session
-  vaultmcp lock                  Remove the key from the OS keychain (refused when that is its only copy)
+  vaultmcp lock                  Move the key out of the OS keychain into key.enc, behind a passphrase
+  vaultmcp unlock                Ask for the passphrase and put the key back in the OS keychain
+  vaultmcp recovery-code         Make a recovery code (or a new one), shown once
+  vaultmcp recover               Bring the key back with the recovery code
   vaultmcp install [--global]    Register hooks (project .claude, or ~/.claude + Codex/Cursor with --global)
   vaultmcp export-aliases        Print alias list for CLAUDE.md
   vaultmcp hook                  (internal) run as a Claude Code hook`
@@ -66,6 +67,10 @@ func main() {
 		err = cmdUnlock(args)
 	case "lock":
 		err = cmdLock(args)
+	case "recovery-code":
+		err = cmdRecoveryCode(args)
+	case "recover":
+		err = cmdRecover(args)
 	case "install":
 		err = cmdInstall(args)
 	case "export-aliases":
@@ -277,35 +282,6 @@ func cmdAudit(args []string) error {
 		fmt.Printf("  %s  %-8s %-32s %s\n", ts, strings.ToUpper(e.Action), e.Alias, e.Context)
 	}
 	fmt.Println()
-	return nil
-}
-
-func cmdUnlock(args []string) error {
-	p := paths()
-	if _, ok := keyring.FromKeychain(); ok {
-		fmt.Println("  already unlocked")
-		return nil
-	}
-	if _, err := masterKeyInteractive(p, false); err != nil {
-		return err
-	}
-	fmt.Println("  vault unlocked")
-	return nil
-}
-
-func cmdLock(args []string) error {
-	// In keychain mode the keychain entry is not a cached copy, it is the
-	// key: `unlock` never puts a key there, only the first `set` does. So it
-	// goes only when key.enc is shown to hold that same key.
-	if k, ok := keyring.FromKeychain(); ok {
-		if err := keyHasFileCopy(paths(), k); err != nil {
-			return err
-		}
-	}
-	if err := keyring.DeleteFromKeychain(); err != nil {
-		return err
-	}
-	fmt.Println("  cached key cleared")
 	return nil
 }
 

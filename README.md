@@ -37,7 +37,8 @@ You can paste the JSON by hand instead of using `install`. The hook needs no arg
 - Cursor `afterShellExecution` has no documented way to rewrite what the model sees. Pre-rewrite still works. Post-redact of `cat .env` may not stick in Cursor.
 - Grok treats `PostToolUse` as passive: hook stdout is recorded but does not replace the result shown to the model. `cat .env` still reaches Grok; rely on Pre rewrite.
 - Codex PostToolUse cannot rewrite tool results (`updatedToolOutput` is not in the schema). Only PreToolUse is registered. Codex hooks can also be off (`[features] hooks = false`) or waiting on `/hooks` trust.
-- Fail-open: if VaultMCP errors, the tool call proceeds untouched.
+- Fail-open: if VaultMCP errors, the tool call proceeds untouched. The one exception is a vault you locked yourself with `vaultmcp lock`: then every tool call is stopped until `vaultmcp unlock`.
+- When the hook cannot reach the vault key and nobody locked the vault (for example an app that never loaded `VAULTMCP_KEY` from your shell profile), secrets are not hidden. Claude and Codex show a warning about it, at most once every 10 minutes. Grok and Cursor have no documented way for a hook to show a warning on a call it allows, so there the hook stays silent: run `vaultmcp status` if in doubt.
 
 ## How it works
 
@@ -62,8 +63,10 @@ vaultmcp prune --dry-run         # show which captures have expired (omit the fl
 vaultmcp migrate-captures        # move old hook captures out of store.enc (dry run; add --apply, --names lists every one)
 vaultmcp status                  # vault + hook health
 vaultmcp audit --last 50         # view the hash-chained audit log
-vaultmcp unlock                  # cache the key for this machine
-vaultmcp lock                    # remove the key from the OS keychain (refused when that is its only copy)
+vaultmcp lock                    # move the key out of the keychain into key.enc, behind a passphrase
+vaultmcp unlock                  # type the passphrase, the key goes back into the keychain
+vaultmcp recovery-code           # make a recovery code (or a new one); shown once
+vaultmcp recover                 # bring the key back with the recovery code
 vaultmcp export-aliases          # print alias list for AGENTS.md / CLAUDE.md
 ```
 
@@ -112,7 +115,29 @@ export VAULTMCP_KEY="your-passphrase"
 
 Understand the tradeoff: anyone who can read your environment can read that passphrase.
 
-**The key is never replaced by accident.** A vault that already holds secrets was sealed with a key that exists somewhere. If VaultMCP cannot find that key, it stops and says so; it does not make a new one, because a new key would open nothing and would hide the old one. The usual cause is setting `VAULTMCP_KEY` on a machine whose key is in the keychain: unset it and the vault opens again. For the same reason `vaultmcp lock` removes the keychain entry only after it has checked that `key.enc` holds the same key (it asks for the passphrase, or uses `VAULTMCP_KEY`). In keychain mode that entry is the key, not a copy of it, and it is one entry per user, shared by every vault folder.
+**The key is never replaced by accident.** A vault that already holds secrets was sealed with a key that exists somewhere. If VaultMCP cannot find that key, it stops and says so; it does not make a new one, because a new key would open nothing and would hide the old one. The usual cause is setting `VAULTMCP_KEY` on a machine whose key is in the keychain: unset it and the vault opens again.
+
+## Recovery code
+
+Every vault has one key. If the keychain entry is wiped or the passphrase is forgotten, the secrets are still on disk and nothing can open them. The recovery code is the way back in.
+
+- **When you get it.** The first `vaultmcp set` makes the vault's key, and with it a recovery code: eight groups of four letters and digits, shown once. Save it away from the machine, in a password manager. VaultMCP keeps `recovery.enc`, a copy of the key that only the code opens, and never the code itself.
+- **If nobody is at a terminal** (a setup script, a pipe), no code is made, because it would end up in a log. `vaultmcp status` says `NO RECOVERY CODE` until you run `vaultmcp recovery-code`.
+- **Older vaults** have none. Run `vaultmcp recovery-code` once. It prints the notice on stderr and the code alone on stdout, so `vaultmcp recovery-code | your-password-manager` stores it without showing it.
+- **Using it.** `vaultmcp recover` asks for the code at a prompt (never as an argument) and puts the same key back: into the keychain, or into a new `key.enc` under a passphrase you choose. Nothing is re-encrypted and every placeholder keeps working. A wrong code changes nothing.
+- **A new code.** `vaultmcp recovery-code` again replaces `recovery.enc`, and the old code stops opening this folder.
+
+The limits: the code is as powerful as the key, so anyone with the code and a copy of the vault folder can open everything. It opens the vault's files; it is not a backup of them. And because the key itself never changes, a new code does not shut out someone who already has the old code together with an old copy of the folder.
+
+## Lock and unlock
+
+Locking moves the key. It never deletes it.
+
+- `vaultmcp lock` writes the key into `key.enc` behind a passphrase (it asks you to choose one the first time), reads the file back to prove the key is in it, and only then takes the key out of the OS keychain. It refuses if the vault has no recovery code, because a locked vault with a forgotten passphrase would otherwise be lost.
+- `vaultmcp unlock` asks for the passphrase and puts the key back into the keychain.
+- While the vault is locked, the hook cannot hide secrets, so it **stops every agent tool call** with a message that says to run `vaultmcp unlock`. That is deliberate: an agent running with redaction silently off is the opposite of what locking is for.
+- A vault that uses `VAULTMCP_KEY` cannot be locked, and `lock` says so: the passphrase is in the environment, so the vault is open to anything running as you.
+- The OS keychain holds one VaultMCP key per user, not one per vault folder. If you use several folders through `VAULTMCP_DIR`, give them passphrases with `VAULTMCP_KEY`.
 
 ## What gets detected
 
@@ -138,7 +163,8 @@ Not flagged: URLs, `${VARS}`, `$(cmd)`, existing `[vault:…]` aliases, UUIDs, l
 - **At rest:** `~/.vaultmcp/` and `captured/` are `0700`, `store.enc` and every capture file are `0600`.
 - **Machine lock:** capture files use a key derived (HKDF-SHA256) from the master key and the machine's identifier. See [Named secrets and captures](#named-secrets-and-captures) for what that does and does not protect.
 - **Bound to the alias:** each capture file is sealed with its alias as associated data, so a file copied to another name does not open there.
-- **Audit:** `set`, `get`, `delete`, each capture, each migration and each prune that deleted something are logged to `~/.vaultmcp/audit.log`, hash-chained so tampering is detectable. A prune is logged as counts, without names. Values are never logged — only alias names. Hooks that write at the same moment can break the chain without anyone tampering, so a failed check is a reason to look, not proof.
+- **Recovery:** `recovery.enc` holds the master key sealed (Argon2id, XChaCha20-Poly1305) under a 160-bit recovery code that is shown once and never stored. Key files are written to a temp file, synced, and renamed into place.
+- **Audit:** `set`, `get`, `delete`, `lock`, `unlock`, `recover`, a new recovery code, each capture, each migration and each prune that deleted something are logged to `~/.vaultmcp/audit.log`, hash-chained so tampering is detectable. A prune is logged as counts, without names. Values are never logged — only alias names. Hooks that write at the same moment can break the chain without anyone tampering, so a failed check is a reason to look, not proof.
 
 Run `vaultmcp audit` to review.
 

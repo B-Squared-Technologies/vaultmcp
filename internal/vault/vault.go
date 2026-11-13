@@ -24,6 +24,8 @@ type Paths struct {
 	Meta     string
 	Audit    string
 	Captured string // one sealed file per secret the hook captured by itself
+	Recovery string // the master key sealed under the recovery code
+	Locked   string // marker: the vault was locked on purpose with `vaultmcp lock`
 }
 
 // DefaultPaths returns the vault layout. The directory is ~/.vaultmcp by
@@ -45,6 +47,8 @@ func DefaultPaths() (Paths, error) {
 		Meta:     filepath.Join(dir, "meta.json"),
 		Audit:    filepath.Join(dir, "audit.log"),
 		Captured: filepath.Join(dir, "captured"),
+		Recovery: filepath.Join(dir, "recovery.enc"),
+		Locked:   filepath.Join(dir, "locked"),
 	}, nil
 }
 

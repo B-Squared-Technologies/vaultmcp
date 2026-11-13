@@ -33,10 +33,18 @@ func cmdStatus(args []string) error {
 		fmt.Println("  session: unlocked (VAULTMCP_KEY)")
 	case inKeychain:
 		fmt.Println("  session: unlocked (OS keychain)")
+	case fileExists(p.Locked):
+		fmt.Println("  session: LOCKED with 'vaultmcp lock': agent tool calls are stopped until 'vaultmcp unlock'")
 	case fileExists(p.Key):
 		fmt.Println("  session: locked (passphrase mode — run 'vaultmcp unlock')")
 	default:
 		fmt.Println("  session: locked")
+	}
+	switch {
+	case fileExists(p.Recovery):
+		fmt.Println("  recovery: a recovery code exists for this vault")
+	case inKeychain || fileExists(p.Key):
+		fmt.Println("  recovery: NO RECOVERY CODE: if the key or passphrase is lost, so is the vault. Run 'vaultmcp recovery-code'")
 	}
 	if !keyring.Available() {
 		fmt.Println("  keychain: unavailable — passphrase mode")

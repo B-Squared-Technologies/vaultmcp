@@ -14,10 +14,12 @@ keychain, setting `VAULTMCP_KEY` and then running `vaultmcp set` created a
 new key over the existing vault. The old secrets no longer opened and the
 hook stopped redacting.
 
-0.2.0 closes both. It cannot bring back a key that is already gone. If
-`set` once made a second key on your machine, the first one is still in the
-keychain: when `vaultmcp list` fails with a decryption error while
-`VAULTMCP_KEY` is set, unset it and try again.
+0.2.0 closes both, and adds the thing that was missing all along: a
+recovery code, so that a lost key is no longer the end of a vault. It cannot
+bring back a key that is already gone. If `set` once made a second key on
+your machine, the first one is still in the keychain: when `vaultmcp list`
+fails with a decryption error while `VAULTMCP_KEY` is set, unset it and try
+again.
 
 ### What changed, and why
 
@@ -42,10 +44,27 @@ secrets never expire. The README section "Named secrets and captures" has
 the exact rules. If you want to keep a captured value, store it under a
 name.
 
+**Every vault gets a recovery code.** One key seals everything, and until
+now nothing could replace it. The first `vaultmcp set` now also shows a
+recovery code, once. `vaultmcp recover` uses it to bring the same key back.
+Existing vaults: run `vaultmcp recovery-code` and save what it prints.
+
+**`lock` and `unlock` are a real pair.** `lock` moves the key from the OS
+keychain into `key.enc` behind a passphrase, and `unlock` moves it back. The
+key is never deleted. Before, `unlock` stored nothing and `lock` only
+deleted.
+
+**The hook says when it is not protecting you.** It used to stay silent
+whenever it could not reach the key. Now a vault you locked on purpose stops
+agent tool calls until you unlock it, and a key that is merely out of reach
+(or that does not open the vault) gets a warning in Claude and Codex.
+
 **New commands**
 
 - `vaultmcp list --captured` lists what the hook captured.
 - `vaultmcp prune [--dry-run]` deletes expired captures.
+- `vaultmcp recovery-code` makes a recovery code, or a new one.
+- `vaultmcp recover` brings the key back with it.
 - `vaultmcp migrate-captures [--apply] [--names]` moves captures made by
   older versions out of `store.enc`. It backs the file up first, shows what
   it will move by name, and changes nothing without `--apply`. Old
@@ -53,10 +72,14 @@ name.
 
 ### Changes in behaviour
 
-- `vaultmcp lock` removes the key from the keychain only when `key.enc`
-  holds the same key, which it checks with the passphrase. Otherwise it
-  refuses. The keychain entry is one per user, shared by every vault
-  folder, so an empty folder is no reason to let it go.
+- `vaultmcp lock` no longer deletes anything. It needs a recovery code to
+  exist, asks for a passphrase, and refuses when `VAULTMCP_KEY` is set.
+- `vaultmcp unlock` puts the key back into the keychain. Where there is
+  nothing to unlock, it says that and no longer prints "vault unlocked".
+- While a vault is locked with `vaultmcp lock`, the hook stops agent tool
+  calls. In every other case it still never blocks.
+- The first `vaultmcp set` prints a recovery code on stderr when a person is
+  at the terminal.
 - `vaultmcp set` refuses to create a new key over a vault that already
   holds secrets.
 - `prune` and `migrate-captures` reject arguments they do not know. Before,
@@ -67,9 +90,10 @@ name.
 ### Upgrading
 
 1. Replace the binary. Nothing changes on disk until a secret is captured.
-2. Run `vaultmcp migrate-captures` and read the list.
-3. Run `vaultmcp migrate-captures --apply`.
-4. When you are satisfied, delete the `store.enc.pre-captures-*` backup. It
+2. Run `vaultmcp recovery-code` and save the code away from the machine.
+3. Run `vaultmcp migrate-captures` and read the list.
+4. Run `vaultmcp migrate-captures --apply`.
+5. When you are satisfied, delete the `store.enc.pre-captures-*` backup. It
    still holds every old capture.
 
 Do not change the vault's master key on a machine that has capture files:
@@ -82,5 +106,12 @@ captures are sealed with a key derived from it.
 - If two hooks repair the same damaged capture file in the same moment and
   something reads it in between, its "used" mark can be lost, and that
   capture then expires after 7 days where it would have had 30.
+- Grok and Cursor give a hook no documented way to show a warning on a
+  call it allows. When the key is out of reach there, the hook is silent.
+- The OS keychain holds one VaultMCP key per user, not one per vault
+  folder.
+- A new recovery code does not shut out someone who already holds the old
+  code together with an old copy of the vault folder: the key itself never
+  changes.
 - On Windows, a binary path with backslashes or spaces still breaks the
   shell rewrite. That fix is next.
