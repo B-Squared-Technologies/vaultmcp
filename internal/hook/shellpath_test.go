@@ -24,8 +24,8 @@ func TestShellPath(t *testing.T) {
 		// Off Windows a backslash is part of a file name. It is kept, quoted.
 		{"a backslash off windows", `/opt/odd\name/vaultmcp`, false, `'/opt/odd\name/vaultmcp'`},
 	} {
-		if got := shellPath(c.in, c.windows); got != c.want {
-			t.Errorf("%s: shellPath(%q) = %s, want %s", c.name, c.in, got, c.want)
+		if got := ShellPath(c.in, c.windows); got != c.want {
+			t.Errorf("%s: ShellPath(%q) = %s, want %s", c.name, c.in, got, c.want)
 		}
 	}
 }
@@ -63,7 +63,7 @@ func TestShellPathRunsInARealShell(t *testing.T) {
 	if err := os.WriteFile(exe, blob, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	script := "printf %s \"$(" + shellPath(exe, runtime.GOOS == "windows") + " -test.run='^TestHelperProcess$')\""
+	script := "printf %s \"$(" + ShellPath(exe, runtime.GOOS == "windows") + " -test.run='^TestHelperProcess$')\""
 	cmd := exec.Command(bash, "-c", script)
 	cmd.Env = append(os.Environ(), "VAULTMCP_TEST_HELPER=1")
 	out, err := cmd.CombinedOutput()

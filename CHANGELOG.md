@@ -93,6 +93,17 @@ agent tool calls until you unlock it, and a key that is merely out of reach
   a mistyped `--dry-run` ran as a real prune.
 - `vaultmcp status` counts named secrets and captures separately, and says
   whether captures are locked to this machine.
+- `vaultmcp install` registers a script, `vaultmcp-hook`, where `/bin/zsh`
+  exists. The script loads `~/.zshenv` and then runs the hook, so an app
+  opened from the Dock gets `VAULTMCP_KEY`. Before, such an app ran the hook
+  without the key and nothing was hidden.
+- Running `vaultmcp install` again moves an older registration to the
+  script. Codex skips a changed hook until it is trusted again in `/hooks`;
+  `install` says so.
+- `vaultmcp install` no longer removes another tool's hook when that hook
+  shares a matcher entry with vaultmcp's.
+- A binary path with a space in it now works in rewritten shell commands,
+  and so does a Windows path with backslashes.
 
 ### Upgrading
 
@@ -108,6 +119,10 @@ captures are sealed with a key derived from it.
 
 ### Known limits
 
+- On Windows `install` registers the hook command without quotes, so a
+  space in the binary's path is expected to break it. Not tested.
+- The script `install` writes reads `~/.zshenv` only. A `VAULTMCP_KEY` set
+  in another shell's profile does not reach an app opened from the Dock.
 - A placeholder that sits in a file for 30 days without an agent using it
   stops resolving. Reading the file does not count as use.
 - If two hooks repair the same damaged capture file in the same moment and

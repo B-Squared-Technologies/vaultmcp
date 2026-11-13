@@ -22,9 +22,13 @@ vaultmcp install --global
 
 `vaultmcp install` without `--global` still writes only the project's `.claude/settings.json`.
 
+On a machine with `/bin/zsh`, `install` writes a small script, `vaultmcp-hook`, next to the binary and registers that script. An app opened from the Dock or a launcher does not load your shell settings, so a `VAULTMCP_KEY` exported in `~/.zshenv` would never reach a hook that app starts. The script loads `~/.zshenv` and then runs `vaultmcp hook`. Nothing `~/.zshenv` prints or reads reaches the hook's input or output. On Windows, with no `/bin/zsh`, or when the script cannot be written next to the binary, `install` registers the binary itself.
+
+Running `install` again brings an older registration up to date where it stands. Hooks that belong to other tools are left alone.
+
 No Go toolchain? Grab a prebuilt binary from the [releases page](https://github.com/B-Squared-Technologies/vaultmcp/releases), put it on your `PATH`, and run `vaultmcp install --global`.
 
-Restart each agent after install. Codex `/hooks` may ask you to trust the new file.
+Restart each agent after install. Codex skips a new or changed hook until you trust it: open Codex, run `/hooks`, and trust the vaultmcp hook. `install` tells you when that applies.
 
 ## How the hook is wired
 

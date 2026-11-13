@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+
+	"github.com/B-Squared-Technologies/vaultmcp/internal/hook"
 )
 
 // settingsPath returns the Claude Code settings file to register hooks in.
@@ -32,8 +35,8 @@ func settingsPath(global bool) (string, error) {
 }
 
 // cmdInstall registers PreToolUse and PostToolUse hooks (idempotently) that
-// invoke this binary's absolute path. The path is forward-slashed so it stays
-// valid JSON on Windows.
+// run the command hookCommand returns for this binary. Running it again
+// brings an older vaultmcp command up to date where it stands.
 func cmdInstall(args []string) error {
 	global := false
 	for _, a := range args {
@@ -46,8 +49,7 @@ func cmdInstall(args []string) error {
 	if err != nil {
 		return err
 	}
-	exe = filepath.ToSlash(exe)
-	command := exe + " hook"
+	command := hookCommand(exe)
 
 	sp, err := settingsPath(global)
 	if err != nil {
@@ -128,14 +130,23 @@ func writeClaudeStyleHooks(path, command string) error {
 	// Codex PreToolUse can rewrite input via hookSpecificOutput.updatedInput.
 	// Codex PostToolUse has no updatedToolOutput, so a registered post hook
 	// cannot redact results; skip it and drop a leftover vaultmcp entry.
-	if ensureHook(hooks, "PreToolUse", command) {
+	pre := ensureHook(hooks, "PreToolUse", command)
+	if pre {
 		added++
 	}
 	if removeVaultHook(hooks, "PostToolUse") {
 		added++
 	}
 	settings["hooks"] = hooks
-	return writeJSON(path, settings, added)
+	if err := writeJSON(path, settings, added); err != nil {
+		return err
+	}
+	if pre {
+		// Codex records trust against the exact hook definition and skips a
+		// new or changed one. Left unsaid, the hook is off and nothing shows.
+		fmt.Println("  Codex skips a new or changed hook until you trust it: open Codex, run /hooks, and trust the vaultmcp hook.")
+	}
+	return nil
 }
 
 // Cursor's hooks.json is {version, hooks: {preToolUse: [{command}]}} — not
@@ -203,13 +214,84 @@ func writeJSON(path string, settings map[string]any, added int) error {
 	return nil
 }
 
+// zshPath is the shell the wrapper script runs under. It is a variable so a
+// test can stand in for a machine that has no zsh.
+var zshPath = "/bin/zsh"
+
+// hookCommand returns the command the agent tools are told to run.
+//
+// An app opened from the Dock or a launcher does not load the shell's
+// settings, so a VAULTMCP_KEY exported in ~/.zshenv never reaches a hook that
+// app starts, and the hook has to let every call through with nothing hidden.
+// Where zsh exists, install therefore writes a small script next to the binary
+// that loads ~/.zshenv and then becomes the hook, and registers the script.
+// On Windows, without zsh, or when the script cannot be written, the binary is
+// registered directly, as it always was.
+func hookCommand(exe string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.ToSlash(exe) + " hook"
+	}
+	direct := hook.ShellPath(exe, false) + " hook"
+	if _, err := os.Stat(zshPath); err != nil {
+		return direct
+	}
+	wrapper := filepath.Join(filepath.Dir(exe), "vaultmcp-hook")
+	if err := writeWrapper(wrapper, exe); err != nil {
+		fmt.Printf("  note: could not write %s (%v). The hook will run the binary directly, so an app that does not load your shell settings will not get VAULTMCP_KEY.\n", wrapper, err)
+		return direct
+	}
+	return hook.ShellPath(wrapper, false)
+}
+
+// wrapperScript is the script hookCommand registers. zsh is started with -f
+// so it loads no startup file by itself; ~/.zshenv is then loaded with its
+// input and output closed off, because the hook's stdin is the tool call and
+// its stdout is the answer the agent tool parses: a line ~/.zshenv printed, or
+// a command in it that read stdin, would break one or the other. exec hands
+// stdin and stdout to the binary untouched.
+func wrapperScript(exe string) string {
+	return "#!" + zshPath + " -f\n" +
+		"# Written by `vaultmcp install`, which rewrites it. Do not edit.\n" +
+		"# An app opened from the Dock does not load your shell settings, so a\n" +
+		"# VAULTMCP_KEY set in ~/.zshenv would not reach the hook. This loads that\n" +
+		"# file, then becomes the hook.\n" +
+		"[[ -r \"${HOME}/.zshenv\" ]] && source \"${HOME}/.zshenv\" </dev/null >/dev/null 2>&1\n" +
+		"exec '" + strings.ReplaceAll(exe, "'", `'\''`) + "' hook \"$@\"\n"
+}
+
+// writeWrapper puts the script in place in one step, so a hook that fires
+// while install runs never reads half a file.
+func writeWrapper(path, exe string) error {
+	tmp := fmt.Sprintf("%s.new-%d", path, os.Getpid())
+	// #nosec G306 -- a script has to be executable. Owner only.
+	if err := os.WriteFile(tmp, []byte(wrapperScript(exe)), 0o700); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// ensureCursorHook registers command for event. A vaultmcp command already
+// there is kept where it is and brought up to date. Returns true when it
+// changed anything.
 func ensureCursorHook(hooks map[string]any, event, command string) bool {
 	list, _ := hooks[event].([]any)
+	found, changed := false, false
 	for _, entry := range list {
 		m, _ := entry.(map[string]any)
 		if cmd, _ := m["command"].(string); strings.Contains(cmd, "vaultmcp") {
-			return false
+			found = true
+			if cmd != command {
+				m["command"] = command
+				changed = true
+			}
 		}
+	}
+	if found {
+		return changed
 	}
 	hooks[event] = append(list, map[string]any{"command": command})
 	return true
@@ -254,19 +336,29 @@ func removeVaultHook(hooks map[string]any, event string) bool {
 }
 
 // ensureHook adds a {matcher:".*", hooks:[{type:command, command}]} entry for
-// event if an equivalent vaultmcp command is not already present. Returns true
-// if it added one.
+// event. A vaultmcp command already there is kept where it is, with its
+// matcher and its neighbours, and brought up to date: an install made before
+// the wrapper existed points at the binary. Returns true when it changed
+// anything.
 func ensureHook(hooks map[string]any, event, command string) bool {
 	list, _ := hooks[event].([]any)
+	found, changed := false, false
 	for _, entry := range list {
 		m, _ := entry.(map[string]any)
 		inner, _ := m["hooks"].([]any)
 		for _, h := range inner {
 			hm, _ := h.(map[string]any)
 			if cmd, _ := hm["command"].(string); strings.Contains(cmd, "vaultmcp") {
-				return false // already registered
+				found = true
+				if cmd != command {
+					hm["command"] = command
+					changed = true
+				}
 			}
 		}
+	}
+	if found {
+		return changed
 	}
 	hooks[event] = append(list, map[string]any{
 		"matcher": ".*",
