@@ -229,3 +229,18 @@ func TestSubstitutionInPowerShell(t *testing.T) {
 		t.Error("a path with a space now works in PowerShell: take the known limit out of the changelog")
 	}
 }
+
+func TestPlainPath(t *testing.T) {
+	for p, want := range map[string]bool{
+		"/usr/local/bin/vaultmcp":           true,
+		"C:/Users/RUNNER~1/a+b=c@d%e/v.exe": true,
+		"/Users/zoë/vaultmcp":               true, // not ASCII is plain to a shell
+		"/Users/jo smith/vaultmcp":          false,
+		"/opt/R&D/vaultmcp":                 false,
+		"/opt/a$b/vaultmcp":                 false,
+	} {
+		if got := PlainPath(p); got != want {
+			t.Errorf("PlainPath(%q) = %v, want %v", p, got, want)
+		}
+	}
+}

@@ -67,6 +67,9 @@ func cmdInstall(args []string) error {
 	}
 
 	added := 0
+	if repairOldCommand(hooks, command) {
+		added++
+	}
 	for _, event := range []string{"PreToolUse", "PostToolUse"} {
 		if ensureHook(hooks, event, command) {
 			added++
@@ -127,6 +130,9 @@ func writeClaudeStyleHooks(path, command string) error {
 		hooks = map[string]any{}
 	}
 	added := 0
+	if repairOldCommand(hooks, command) {
+		added++
+	}
 	// Codex PreToolUse can rewrite input via hookSpecificOutput.updatedInput.
 	// Codex PostToolUse has no updatedToolOutput, so a registered post hook
 	// cannot redact results; skip it and drop a leftover vaultmcp entry.
@@ -157,6 +163,9 @@ func writeCursorHooks(path, command string) error {
 	delete(hooks, "PreToolUse")
 	delete(hooks, "PostToolUse")
 	added := 0
+	if repairOldCommand(hooks, command) {
+		added++
+	}
 	for _, event := range []string{"preToolUse", "postToolUse", "beforeShellExecution", "afterShellExecution"} {
 		if ensureCursorHook(hooks, event, command) {
 			added++
@@ -244,6 +253,9 @@ func hookProgram(exe string) string {
 	return b.String()
 }
 
+// prefixes are words in front of a command that run the command after them.
+var prefixes = map[string]bool{"env": true, "exec": true, "command": true}
+
 // shells are programs that run the command line or the script they are given.
 var shells = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true, "cmd": true, "pwsh": true, "powershell": true}
 
@@ -284,6 +296,11 @@ func isAssignment(word string) bool {
 // for ours meant install skipped its own registration because of it, and
 // removed it when cleaning up. A NAME=value, env, exec or command in front,
 // and a redirect or another command behind, do not change whose hook it is.
+//
+// In doubt the answer is no. A hook of ours that is missed (inside an if, a
+// subshell, some wrapper not known here) gets a second registration beside
+// it, and the hook then runs twice. Another tool's hook taken for ours is
+// worse: install would skip its own registration, or remove theirs.
 func isVaultHook(cmd string) bool {
 	return runsVaultHook(shellWords(cmd))
 }
@@ -299,15 +316,17 @@ func runsVaultHook(words []string) bool {
 		case w == "<" || w == ">":
 			file = true // the next word is a file name, not a program
 			continue
+		case file && isOperator(w):
+			continue // >& and >| are still the redirect
 		case isOperator(w):
-			start, file = true, false
+			start = true
 			continue
 		case file:
 			file = false
 			continue
 		case !start:
 			continue
-		case isAssignment(w) || w == "env" || w == "exec" || w == "command":
+		case isAssignment(w) || prefixes[programName(w)]:
 			continue
 		}
 		start = false
@@ -318,17 +337,8 @@ func runsVaultHook(words []string) bool {
 		if strings.HasPrefix(name, "vaultmcp") && i+1 < len(words) && words[i+1] == "hook" {
 			return true
 		}
-		if shells[name] {
-			args := words[i+1:]
-			for j, a := range args {
-				if isOperator(a) {
-					args = args[:j]
-					break
-				}
-			}
-			if shellRunsVaultHook(name, args) {
-				return true
-			}
+		if shells[name] && shellRunsVaultHook(name, words[i+1:]) {
+			return true
 		}
 	}
 	return false
@@ -361,8 +371,11 @@ func shellRunsVaultHook(shell string, args []string) bool {
 			if low == "-command" || low == "-c" {
 				return restRunsVaultHook(args[j+1:])
 			}
+			if j == 0 && !strings.HasPrefix(a, "-") {
+				return programName(a) == "vaultmcp-hook" // pwsh script.ps1
+			}
 		case strings.HasPrefix(a, "--"):
-		case strings.HasPrefix(a, "-") || strings.HasPrefix(a, "+"):
+		case strings.HasPrefix(a, "-"):
 			if strings.Contains(a, "c") {
 				return j+1 < len(args) && isVaultHook(args[j+1])
 			}
@@ -370,16 +383,60 @@ func shellRunsVaultHook(shell string, args []string) bool {
 				j++ // -o and -eo take an option's name next, which is not a script
 			}
 		default:
-			return programName(a) == "vaultmcp-hook"
+			// A script counts only as the first word. Further along it may
+			// be the value of an option this code does not know.
+			return j == 0 && programName(a) == "vaultmcp-hook"
 		}
 	}
 	return false
 }
 
 // restRunsVaultHook reads the rest of a line handed to cmd.exe or PowerShell
-// as command text: one quoted word that holds a whole command, or loose words.
+// as command text. A single word is the whole command in quotes, and is split
+// again. Several words are the command as it stands.
 func restRunsVaultHook(rest []string) bool {
-	return len(rest) > 0 && (isVaultHook(rest[0]) || runsVaultHook(rest))
+	switch len(rest) {
+	case 0:
+		return false
+	case 1:
+		return isVaultHook(rest[0])
+	}
+	return runsVaultHook(rest) || isVaultHook(rest[0])
+}
+
+// repairOldCommand rewrites a registration an earlier version made for this
+// same binary without quotes. With a space or another special character in
+// the path that command never ran, so it is replaced where it stands by the
+// quoted one. It reports whether anything changed.
+func repairOldCommand(settings any, command string) bool {
+	words := shellWords(command)
+	if len(words) == 0 {
+		return false
+	}
+	old := words[0] + " hook"
+	return old != command && replaceCommand(settings, old, command)
+}
+
+func replaceCommand(v any, old, command string) bool {
+	changed := false
+	switch x := v.(type) {
+	case map[string]any:
+		for k, val := range x {
+			if s, ok := val.(string); ok && k == "command" && s == old {
+				x[k] = command
+				changed = true
+			} else if replaceCommand(val, old, command) {
+				changed = true
+			}
+		}
+	case []any:
+		for _, val := range x {
+			if replaceCommand(val, old, command) {
+				changed = true
+			}
+		}
+	}
+	return changed
 }
 
 // shellWords splits a command into words as a shell would: on blanks that are

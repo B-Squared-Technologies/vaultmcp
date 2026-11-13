@@ -275,16 +275,32 @@ func TestIsVaultHook(t *testing.T) {
 		"tee -a /var/log/vaultmcp-hook":            false,
 		"printf '%s' /bin/vaultmcp hook":           false,
 		// Ours, handed to a shell or kept in a script.
-		"zsh -lic '/usr/local/bin/vaultmcp hook'":          true,
-		`bash -lc "/usr/local/bin/vaultmcp hook"`:          true,
-		`cmd /c "C:\tools\vaultmcp.exe hook"`:              true,
-		"bash /Users/jo/.claude/hooks/vaultmcp-hook.sh":    true,
-		"C:/tools/vaultmcp-hook.cmd":                       true,
-		"pwsh -File C:/tools/vaultmcp-hook.ps1":            true,
-		"C:/Tools/VAULTMCP.EXE hook":                       true,
-		"C:/tools/vaultmcp-hook.exe":                       true,
-		"env VAULTMCP_DIR=/x /usr/local/bin/vaultmcp hook": true,
-		"true && /usr/local/bin/vaultmcp hook":             true,
+		"zsh -lic '/usr/local/bin/vaultmcp hook'":                   true,
+		`bash -lc "/usr/local/bin/vaultmcp hook"`:                   true,
+		`cmd /c "C:\tools\vaultmcp.exe hook"`:                       true,
+		"bash /Users/jo/.claude/hooks/vaultmcp-hook.sh":             true,
+		"C:/tools/vaultmcp-hook.cmd":                                true,
+		"pwsh -File C:/tools/vaultmcp-hook.ps1":                     true,
+		"C:/Tools/VAULTMCP.EXE hook":                                true,
+		"C:/tools/vaultmcp-hook.exe":                                true,
+		"env VAULTMCP_DIR=/x /usr/local/bin/vaultmcp hook":          true,
+		"true && /usr/local/bin/vaultmcp hook":                      true,
+		"lint >& /tmp/vaultmcp-hook":                                false,
+		"lint >| /tmp/vaultmcp-hook":                                false,
+		"lint >& /tmp/log /usr/local/bin/vaultmcp hook":             false,
+		"bash --rcfile /x/vaultmcp-hook /opt/lint.sh":               false,
+		"bash -O vaultmcp-hook /opt/lint.sh":                        false,
+		`cmd /c "del C:\tmp\vaultmcp-hook"`:                         false,
+		`powershell -Command "Remove-Item C:/tmp/vaultmcp-hook"`:    false,
+		`cmd script.cmd /c "vaultmcp hook"`:                         false,
+		"/usr/bin/env VAULTMCP_DIR=/x /usr/local/bin/vaultmcp hook": true,
+		"/usr/bin/env vaultmcp hook":                                true,
+		"pwsh ./vaultmcp-hook.ps1":                                  true,
+		"powershell C:/tools/vaultmcp-hook.ps1":                     true,
+		// Ours, but in a shape this check does not read. The answer in doubt
+		// is no, and install then adds its own registration beside these.
+		"if [ -x /usr/local/bin/vaultmcp ]; then /usr/local/bin/vaultmcp hook; fi": false,
+		"(cd /x && /usr/local/bin/vaultmcp hook)":                                  false,
 		// A script is one word, judged by its name. What follows it is its own.
 		"bash /opt/audit.sh /tmp/vaultmcp-hook":                         false,
 		`bash "/Users/Jo Smith/.claude/hooks/vaultmcp-hook.sh"`:         true,
@@ -408,6 +424,7 @@ func TestShellWords(t *testing.T) {
 		"'/a b/vaultmcp' hook":               {"/a b/vaultmcp", "hook"},
 		`"/a \"b\"/vaultmcp" hook`:           {`/a "b"/vaultmcp`, "hook"},
 		`/a\ b/vaultmcp hook`:                {"/a b/vaultmcp", "hook"},
+		"\"/a\\$b/c\\`d/vaultmcp\" hook":     {"/a$b/c`d/vaultmcp", "hook"},
 		`C:\Users\jo\vaultmcp.exe hook`:      {`C:\Users\jo\vaultmcp.exe`, "hook"},
 		"/bin/vaultmcp hook>>/tmp/log":       {"/bin/vaultmcp", "hook", ">", ">", "/tmp/log"},
 		"X=1 /bin/vaultmcp hook 2>/dev/null": {"X=1", "/bin/vaultmcp", "hook", "2", ">", "/dev/null"},
@@ -575,4 +592,40 @@ func FuzzHookCommandIsKnown(f *testing.F) {
 			t.Errorf("install would not know its own command: %q", cmd)
 		}
 	})
+}
+
+// An earlier version registered the binary's path bare. With a space or an
+// ampersand in it that command never ran. install puts the quoted command in
+// its place: it does not add a second entry, and it does not take the broken
+// one for a working registration.
+func TestInstallRepairsAnOldCommandThatNeverRan(t *testing.T) {
+	for _, exe := range []string{"C:/Users/Jo Smith/bin/vaultmcp.exe", "/opt/R&D/vaultmcp", "/opt/x(1)/vaultmcp", "/opt/$x/vaultmcp"} {
+		command := hookCommand(exe)
+		hooks := map[string]any{"PreToolUse": []any{map[string]any{
+			"matcher": ".*",
+			"hooks":   []any{map[string]any{"type": "command", "command": exe + " hook"}},
+		}}}
+		if !repairOldCommand(hooks, command) {
+			t.Errorf("%s: the old command was left as it was", exe)
+			continue
+		}
+		if ensureHook(hooks, "PreToolUse", command) {
+			t.Errorf("%s: a second entry was added", exe)
+		}
+		list := hooks["PreToolUse"].([]any)
+		got := list[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)["command"]
+		if len(list) != 1 || got != command {
+			t.Errorf("%s: entries = %v", exe, list)
+		}
+
+		cursor := map[string]any{"preToolUse": []any{map[string]any{"command": exe + " hook"}}}
+		if !repairOldCommand(cursor, command) || ensureCursorHook(cursor, "preToolUse", command) {
+			t.Errorf("%s: Cursor: not repaired in place", exe)
+		}
+	}
+	// A plain path was always registered the way it is now: nothing to repair.
+	plain := map[string]any{"PreToolUse": []any{map[string]any{"hooks": []any{map[string]any{"command": "/usr/local/bin/vaultmcp hook"}}}}}
+	if repairOldCommand(plain, hookCommand("/usr/local/bin/vaultmcp")) {
+		t.Error("a plain registration was rewritten")
+	}
 }

@@ -102,7 +102,9 @@ agent tool calls until you unlock it, and a key that is merely out of reach
   `vaultmcp-hook`, also when a shell is handed one of those.
 - `vaultmcp install` puts the binary's path in double quotes when it has a
   space or another special character in it, so the hook command runs in sh
-  and in Git Bash. A plain path is registered exactly as before.
+  and in Git Bash. A plain path is registered exactly as before. A bare
+  registration that an earlier version made for such a path never ran:
+  `install` now replaces it with the quoted one.
 - A binary path with a space or another special character in it now works
   in the commands the hook rewrites, when bash runs them (Git Bash on
   Windows, where backslashes are also handled). In PowerShell a plain path
@@ -130,9 +132,10 @@ captures are sealed with a key derived from it.
 - A hook command with a quoted path (a binary under a path with a space)
   does not run where a tool hands hook commands to PowerShell. cmd.exe is
   not tested.
-- A hook registered by an earlier version for a path with a space never
-  ran. `install` leaves it in place and adds a working one beside it: take
-  the old line out by hand.
+- `install` knows vaultmcp's hook in its plain forms, behind `env`, and
+  handed to a shell with `-c`. A hook wrapped some other way (inside an
+  `if`, a subshell, a wrapper program) is not known, and `install` adds its
+  own registration beside it, so the hook runs twice. Take one out by hand.
 - Inside backticks, a binary path with `$`, a backtick or a backslash in it
   is not escaped correctly. Use `$( )` in such a command.
 - An app that was not started from a terminal does not get a
