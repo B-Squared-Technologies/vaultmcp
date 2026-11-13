@@ -23,6 +23,23 @@ jobs:
       - run: go vet ./...
       - run: go test ./...
       - run: go build .
+      # The keychain code against the real thing: the macOS Keychain, Windows
+      # Credential Manager, and on Linux a Secret Service started for the job.
+      # Every other test uses a stand-in keychain, and swaps it in for the
+      # rest of its process, so this test runs in a process of its own.
+      - name: real keychain (Linux, set up a Secret Service)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y gnome-keyring libsecret-tools
+      - name: real keychain (Linux)
+        if: runner.os == 'Linux'
+        env:
+          VAULTMCP_REAL_KEYCHAIN: "1"
+        run: dbus-run-session -- bash -c "echo 'ci-keyring' | gnome-keyring-daemon --unlock && go test -count=1 -v -run TestRealKeychain ."
+      - name: real keychain (macOS, Windows)
+        if: runner.os != 'Linux'
+        env:
+          VAULTMCP_REAL_KEYCHAIN: "1"
+        run: go test -count=1 -v -run TestRealKeychain .
 
   lint:
     runs-on: ubuntu-latest
