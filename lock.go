@@ -113,8 +113,27 @@ func keychainPut(master []byte) error {
 	return keyring.ToKeychain(master)
 }
 
+// writeLockMarker puts the marker on the disk before it returns. The caller
+// removes the key from the keychain next, and a marker lost to a power cut
+// after that would leave a locked vault that lets tool calls through.
 func writeLockMarker(p vault.Paths) error {
-	return os.WriteFile(p.Locked, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o600)
+	f, err := os.OpenFile(p.Locked, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = f.WriteString(time.Now().UTC().Format(time.RFC3339) + "\n")
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(p.Locked)
+		return err
+	}
+	syncDir(p.Dir)
+	return nil
 }
 
 // errNoRecoveryCode: a locked vault whose passphrase is forgotten can only be
@@ -163,11 +182,19 @@ func lockWithoutKeychainKey(p vault.Paths) error {
 }
 
 // endLock removes the marker and, if there was one, records that the lock
-// ended.
-func endLock(p vault.Paths) {
-	if os.Remove(p.Locked) == nil {
+// ended. A marker that is there and cannot be removed is an error. It matters
+// only to a caller that leaves the key out of the hook's reach: where the hook
+// can reach the vault's key, it does not look at the marker.
+func endLock(p vault.Paths) error {
+	err := os.Remove(p.Locked)
+	if err == nil {
 		_ = audit.Log(p.Audit, "unlock", "MASTER", "cli", time.Now())
+		return nil
 	}
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
 }
 
 func cmdUnlock(args []string) error {
@@ -186,7 +213,7 @@ func cmdUnlock(args []string) error {
 		if !opensStore(p, inFile) {
 			return errWrongKeyFile(p)
 		}
-		endLock(p)
+		_ = endLock(p)
 		fmt.Println("  nothing to unlock: VAULTMCP_KEY is set and opens this vault, so it is never locked")
 		return nil
 	}
@@ -194,7 +221,7 @@ func cmdUnlock(args []string) error {
 		if !opensStore(p, inKeychain) {
 			return fmt.Errorf("the OS keychain holds a key, but it does not open store.enc in %s: it is most likely another vault folder's key, and it was left alone. The keychain holds one key per user. To open this folder beside the other, give it a passphrase with VAULTMCP_KEY", p.Dir)
 		}
-		endLock(p)
+		_ = endLock(p)
 		fmt.Println("  already unlocked: the key is in the OS keychain")
 		return nil
 	}
@@ -220,7 +247,9 @@ func cmdUnlock(args []string) error {
 		// no keychain for the key to go back to: this is the only way the
 		// owner can end a lock here without putting the passphrase in the
 		// environment. So the lock ends, and the message says what that means.
-		endLock(p)
+		if err := endLock(p); err != nil {
+			return fmt.Errorf("the passphrase is right, but the lock marker could not be removed, so agent tool calls stay stopped: %w", err)
+		}
 		fmt.Println("  the passphrase is right, but this machine has no OS keychain to keep the vault unlocked in.")
 		fmt.Println("  Commands will ask for the passphrase each time. For unattended use, set VAULTMCP_KEY.")
 		fmt.Println("  Agent tool calls are no longer stopped, and the hook cannot hide secrets from them until it can reach the key.")

@@ -1064,3 +1064,29 @@ func TestAKeyIsCheckedAgainstCapturesWhenThereIsNoStore(t *testing.T) {
 		t.Fatalf("a locked vault let a call through: %s", got)
 	}
 }
+
+// On a machine with no keychain, the marker is all that stands between
+// "stopped" and "running". If it cannot be removed, unlock must not say the
+// calls are no longer stopped.
+func TestUnlockSaysSoWhenTheMarkerCannotBeRemoved(t *testing.T) {
+	v, _ := keychainVault(t)
+	answers(t, "a passphrase for the lock")
+	if err := cmdLock(nil); err != nil {
+		t.Fatal(err)
+	}
+	// A folder with something in it, where the marker was: Remove fails.
+	if err := os.Remove(v.p.Locked); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(v.p.Locked, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	zk.MockInitWithError(errors.New("no keychain here"))
+	t.Cleanup(zk.MockInit)
+	answers(t, "a passphrase for the lock")
+	var err error
+	stdout, _ := output(t, func() { err = cmdUnlock(nil) })
+	if err == nil || !strings.Contains(err.Error(), "stay stopped") || strings.Contains(stdout, "no longer stopped") {
+		t.Fatalf("err = %v, out = %q", err, stdout)
+	}
+}

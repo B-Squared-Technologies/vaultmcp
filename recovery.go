@@ -114,13 +114,19 @@ func writeKeyCopy(path string, master []byte, secret string) error {
 		return err
 	}
 	// The caller may be about to remove the only other copy of the key, so
-	// the new name has to survive a power cut too. Not every system can sync
-	// a folder (Windows cannot), so a failure here is not an error.
-	if dir, err := os.Open(filepath.Dir(path)); err == nil {
-		_ = dir.Sync()
-		_ = dir.Close()
-	}
+	// the new name has to survive a power cut too.
+	syncDir(filepath.Dir(path))
 	return nil
+}
+
+// syncDir asks the system to put a folder's list of names on the disk. Not
+// every system can (Windows cannot), so a failure is not an error.
+func syncDir(dir string) {
+	// #nosec G304 -- dir is the vault's own folder, not user input.
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
 }
 
 // makeRecovery writes recovery.enc for master and returns the code that opens
