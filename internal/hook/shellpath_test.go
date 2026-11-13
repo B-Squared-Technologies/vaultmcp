@@ -212,11 +212,15 @@ func TestSubstitutionInPowerShell(t *testing.T) {
 		return strings.TrimSpace(string(out))
 	}
 
+	// The plain case needs a temp folder with nothing to escape in its path.
+	// A user name with a space rules that out on some machines. Not on CI.
 	plain := copySelf(t, filepath.Join(dir, "plain"), "vaultmcp")
 	if p := shellPath(plain, true); strings.Contains(p, `\`) {
-		t.Fatalf("this test needs a path with nothing to escape, got %s", p)
-	}
-	if got := run(plain); got != "ran" {
+		if os.Getenv("CI") != "" {
+			t.Fatalf("the CI temp folder is no longer a plain path: %s", p)
+		}
+		t.Logf("skipping the plain-path case: the temp folder needs escaping: %s", p)
+	} else if got := run(plain); got != "ran" {
 		t.Errorf("a plain path in PowerShell: got %q", got)
 	}
 	spaced := copySelf(t, filepath.Join(dir, "jo smith"), "vaultmcp")
