@@ -9,6 +9,7 @@ import (
 
 	"github.com/B-Squared-Technologies/vaultmcp/internal/audit"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/keyring"
+	"github.com/B-Squared-Technologies/vaultmcp/internal/vault"
 )
 
 // Locking moves the master key; it never deletes it. An unlocked vault has
@@ -17,7 +18,8 @@ import (
 // then takes the key out of the keychain. `unlock` asks for the passphrase
 // and puts it back. At every moment the key is in at least one of the two.
 //
-// The marker file p.Locked records that the vault was locked on purpose. The
+// The marker file p.Locked records that the vault was locked on purpose: only
+// `lock` writes it. The
 // hook stops agent tool calls only when it finds that marker AND cannot reach
 // the key: a vault whose key is merely out of reach (a keychain that is not
 // available in this session, a passphrase that was never exported) looks the
@@ -34,7 +36,16 @@ func cmdLock(args []string) error {
 	inKeychain, ok := keyring.FromKeychain()
 	if !ok {
 		if fileExists(p.Key) {
+			// The key is already out of the keychain, but nobody has said yet
+			// that this is on purpose. Running `lock` says it.
+			if !fileExists(p.Locked) {
+				if err := writeLockMarker(p); err != nil {
+					return fmt.Errorf("the lock marker could not be written, so agent tool calls are not stopped: %w", err)
+				}
+				_ = audit.Log(p.Audit, "lock", "MASTER", "cli", time.Now())
+			}
 			fmt.Println("  already locked: the key is in key.enc behind its passphrase and not in the OS keychain")
+			fmt.Println("  Agent tool calls are stopped until you run 'vaultmcp unlock'.")
 			return nil
 		}
 		fmt.Println("  nothing to lock: there is no vault key in the OS keychain")
@@ -71,16 +82,24 @@ func cmdLock(args []string) error {
 			return err
 		}
 	}
-	if err := keyring.DeleteFromKeychain(); err != nil {
-		return fmt.Errorf("the key could not be taken out of the OS keychain, so the vault is still unlocked: %w", err)
+	// The marker goes down first. While the key is still in the keychain the
+	// hook ignores it, so there is no moment in which the key is gone and a
+	// tool call is let through unredacted.
+	if err := writeLockMarker(p); err != nil {
+		return fmt.Errorf("the lock marker could not be written, so nothing was locked and the key is still in the OS keychain: %w", err)
 	}
-	if err := os.WriteFile(p.Locked, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o600); err != nil {
-		fmt.Fprintf(os.Stderr, "  warning: the lock marker could not be written (%v). The vault is locked, but the hook will warn instead of stopping tool calls.\n", err)
+	if err := keyring.DeleteFromKeychain(); err != nil {
+		_ = os.Remove(p.Locked)
+		return fmt.Errorf("the key could not be taken out of the OS keychain, so the vault is still unlocked: %w", err)
 	}
 	_ = audit.Log(p.Audit, "lock", "MASTER", "cli", time.Now())
 	fmt.Println("  vault locked: the key is now only in key.enc, behind your passphrase")
 	fmt.Println("  Agent tool calls are stopped until you run 'vaultmcp unlock'.")
 	return nil
+}
+
+func writeLockMarker(p vault.Paths) error {
+	return os.WriteFile(p.Locked, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o600)
 }
 
 func cmdUnlock(args []string) error {

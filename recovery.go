@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -94,7 +96,10 @@ func normalizeRecoveryCode(typed string) (string, bool) {
 // replaced only after the new file has been read back and found to hold
 // master, so a failed write can never cost the copy that was there.
 func writeKeyCopy(path string, master []byte, secret string) error {
-	fresh := path + ".new"
+	// The staging name is this process's own. Two commands running at once
+	// with a shared name could each publish the other's file, and one would
+	// then show a recovery code that does not open what is on disk.
+	fresh := path + ".new-" + strconv.Itoa(os.Getpid())
 	if err := keyring.WrapToFile(fresh, master, secret); err != nil {
 		return err
 	}
@@ -106,6 +111,13 @@ func writeKeyCopy(path string, master []byte, secret string) error {
 	if err := os.Rename(fresh, path); err != nil {
 		_ = os.Remove(fresh)
 		return err
+	}
+	// The caller may be about to remove the only other copy of the key, so
+	// the new name has to survive a power cut too. Not every system can sync
+	// a folder (Windows cannot), so a failure here is not an error.
+	if dir, err := os.Open(filepath.Dir(path)); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
 	}
 	return nil
 }
@@ -290,10 +302,10 @@ func restoreKey(p vault.Paths, master []byte) (string, error) {
 			return "", err
 		}
 	}
-	if fileExists(p.Key) {
-		if got, err := keyring.UnwrapFromFile(p.Key, pass); err == nil && subtle.ConstantTimeCompare(got, master) == 1 {
-			return "key.enc already opens with that passphrase, nothing had to change", nil
-		}
+	wrote := "key.enc now opens with "
+	if got, err := keyring.UnwrapFromFile(p.Key, pass); err == nil && subtle.ConstantTimeCompare(got, master) == 1 {
+		wrote = "key.enc already opens with "
+	} else if fileExists(p.Key) {
 		// A copy, not a move: key.enc stays where it is until the new one
 		// has been written and read back, so a failed write costs nothing.
 		aside := p.Key + ".before-recover-" + time.Now().Format("20060102-150405")
@@ -309,12 +321,14 @@ func restoreKey(p vault.Paths, master []byte) (string, error) {
 		return "", err
 	}
 	if env != "" {
-		return "key.enc now opens with the passphrase in VAULTMCP_KEY", nil
+		return wrote + "the passphrase in VAULTMCP_KEY", nil
 	}
 	// With a keychain to hand and no key in it, finish the job: a person who
-	// just recovered wants the vault open, not one more prompt away.
-	if !hasKeychainKey && keyring.Available() && keyring.ToKeychain(master) == nil {
-		return "key.enc now opens with the new passphrase, and the vault is unlocked", nil
+	// just recovered wants the vault open, not one more prompt away. The
+	// caller is about to end any lock, and a vault that is no longer locked
+	// but whose key the hook cannot reach would run agents unredacted.
+	if same || (!hasKeychainKey && keyring.Available() && keyring.ToKeychain(master) == nil) {
+		return wrote + "that passphrase, and the vault is unlocked", nil
 	}
-	return "key.enc now opens with the new passphrase", nil
+	return wrote + "that passphrase", nil
 }

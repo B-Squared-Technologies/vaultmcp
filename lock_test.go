@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -709,7 +710,7 @@ func TestRecoverKeepsTheOldKeyFileWhenTheNewOneFails(t *testing.T) {
 	}
 	code := codeShape.FindString(shown)
 	// A folder where the new file has to go makes the write fail.
-	if err := os.Mkdir(v.p.Key+".new", 0o700); err != nil {
+	if err := os.Mkdir(v.p.Key+".new-"+strconv.Itoa(os.Getpid()), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("VAULTMCP_KEY", "a second passphrase")
@@ -722,5 +723,72 @@ func TestRecoverKeepsTheOldKeyFileWhenTheNewOneFails(t *testing.T) {
 	}
 	if kept, _ := filepath.Glob(v.p.Key + ".before-recover-*"); len(kept) != 0 {
 		t.Fatalf("a failed recover left a copy behind: %v", kept)
+	}
+}
+
+// The key is already out of the keychain, but no lock was ever declared (a
+// passphrase vault whose VAULTMCP_KEY was taken away). `lock` declares it, and
+// from then on the hook stops tool calls.
+func TestLockDeclaresALockWhenTheKeyIsAlreadyOut(t *testing.T) {
+	v, _ := keychainVault(t)
+	answers(t, "a passphrase for the lock")
+	if err := cmdLock(nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(v.p.Locked); err != nil {
+		t.Fatal(err)
+	}
+	if got := hookSays(t, v.p, claudeEvent, testNow); strings.Contains(got, "deny") {
+		t.Fatalf("with no marker the hook must not stop the call: %s", got)
+	}
+	var err error
+	stdout, _ := output(t, func() { err = cmdLock(nil) })
+	if err != nil || !strings.Contains(stdout, "already locked") || !fileExists(v.p.Locked) {
+		t.Fatalf("err=%v marker=%v out=%q", err, fileExists(v.p.Locked), stdout)
+	}
+	if got := hookSays(t, v.p, claudeEvent, testNow); !strings.Contains(got, `"permissionDecision":"deny"`) {
+		t.Fatalf("after lock the hook must stop the call: %s", got)
+	}
+}
+
+// If the marker cannot be written, nothing is locked: the key stays in the
+// keychain, so there is never a vault that is "locked" yet lets calls through.
+func TestLockWithoutAMarkerLeavesTheKeyInTheKeychain(t *testing.T) {
+	v, _ := keychainVault(t)
+	before := keychainKey(t)
+	if err := os.Mkdir(v.p.Locked, 0o700); err != nil { // a folder in the marker's place
+		t.Fatal(err)
+	}
+	answers(t, "a passphrase for the lock")
+	if err := cmdLock(nil); err == nil || !strings.Contains(err.Error(), "nothing was locked") {
+		t.Fatalf("err = %v, want a refusal", err)
+	}
+	if !bytes.Equal(keychainKey(t), before) {
+		t.Fatal("the key left the keychain though the lock was not recorded")
+	}
+}
+
+// Recover ends a lock. If the passphrase typed already opens key.enc there is
+// nothing to write, but the key must still go back into the keychain, or the
+// vault would be "not locked" with a key the hook cannot reach.
+func TestRecoverUnlocksEvenWhenTheKeyFileNeedsNoChange(t *testing.T) {
+	v, code := keychainVault(t)
+	master := keychainKey(t)
+	answers(t, "a passphrase for the lock")
+	if err := cmdLock(nil); err != nil {
+		t.Fatal(err)
+	}
+	answers(t, code, "a passphrase for the lock")
+	if err := cmdRecover(nil); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if !bytes.Equal(keychainKey(t), master) {
+		t.Fatal("recover ended the lock but left the key out of the keychain")
+	}
+	if kept, _ := filepath.Glob(v.p.Key + ".before-recover-*"); len(kept) != 0 || fileExists(v.p.Locked) {
+		t.Fatalf("kept=%v marker=%v", kept, fileExists(v.p.Locked))
+	}
+	if got := hookSays(t, v.p, claudeEvent, testNow); got != "" {
+		t.Fatalf("after recover the hook answered a plain call: %s", got)
 	}
 }
