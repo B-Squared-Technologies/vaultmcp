@@ -88,7 +88,11 @@ agent tool calls until you unlock it, and a key that is merely out of reach
   was not given the variable can reach it. Only a person at a terminal is
   asked, and anything but a typed yes changes nothing.
 - The warning for a key that is out of reach now names the fix: run
-  `vaultmcp unlock` in a terminal.
+  `vaultmcp unlock` in a terminal, or `vaultmcp recover` when there is no
+  `key.enc` for a passphrase to open.
+- Run where `VAULTMCP_KEY` is set, `vaultmcp unlock` says so when it ended
+  a lock that was left for other programs, and says where to run it when
+  nobody is at a terminal to be asked about the keychain.
 - While a vault is locked with `vaultmcp lock`, the hook stops agent tool
   calls. In every other case it still never blocks.
 - The first `vaultmcp set` prints a recovery code on stderr when a person is

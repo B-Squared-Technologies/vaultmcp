@@ -255,6 +255,10 @@ func offerKeychain(p vault.Paths, master []byte) error {
 		}
 		return nil
 	}
+	if !atTerminal() || !stdinIsTerminal() {
+		fmt.Println("  the OS keychain does not hold the key. To be asked about putting it there, run 'vaultmcp unlock' at a terminal.")
+		return nil
+	}
 	if !askYesNo("Also put the key in the OS keychain, so a program that was not given VAULTMCP_KEY can reach it?") {
 		return nil
 	}
@@ -284,8 +288,13 @@ func cmdUnlock(args []string) error {
 		if !opensStore(p, inFile) {
 			return errWrongKeyFile(p)
 		}
+		wasLocked := fileExists(p.Locked)
 		_ = endLock(p)
-		fmt.Println("  nothing to unlock: VAULTMCP_KEY is set and opens this vault, so it is never locked")
+		if wasLocked {
+			fmt.Println("  the lock is ended: VAULTMCP_KEY opens this vault, and agent tool calls in programs that were not given it are no longer stopped")
+		} else {
+			fmt.Println("  nothing to unlock: VAULTMCP_KEY is set and opens this vault, so it is never locked")
+		}
 		return offerKeychain(p, inFile)
 	}
 	if inKeychain, ok := keyring.FromKeychain(); ok {

@@ -1321,3 +1321,87 @@ func TestLockTakesTheOfferedKeyOutAgain(t *testing.T) {
 		t.Fatalf("out of reach but not locked: want the warning that names the fix, got %q", got)
 	}
 }
+
+// While the question is open, another vault folder's command puts its own key
+// in the keychain. A yes must not write over it: that key may have no copy.
+func TestUnlockOfferLeavesAKeyThatArrivedWhileAsking(t *testing.T) {
+	envVault(t)
+	terminal(t, true)
+	other := bytes.Repeat([]byte{7}, 32)
+	types(t)
+	typedLine = func() (string, bool) {
+		if err := keyring.ToKeychain(other); err != nil {
+			t.Fatal(err)
+		}
+		return "y\n", true
+	}
+	var err error
+	output(t, func() { err = cmdUnlock(nil) })
+	if err == nil || !strings.Contains(err.Error(), "different key") {
+		t.Fatalf("err = %v, want a refusal that names the other key", err)
+	}
+	if now, ok := keyring.FromKeychain(); !ok || !bytes.Equal(now, other) {
+		t.Fatal("the other vault's key was written over")
+	}
+}
+
+// The warning names a fix only where that fix works.
+func TestOutOfReachWarningNamesAFixThatWorks(t *testing.T) {
+	t.Run("a wrong VAULTMCP_KEY: unlock would not help", func(t *testing.T) {
+		v := envVault(t)
+		t.Setenv("VAULTMCP_KEY", "not the passphrase")
+		got := hookSays(t, v.p, claudeEvent, testNow)
+		if !strings.Contains(got, "does not open key.enc") || strings.Contains(got, "vaultmcp unlock") || strings.Contains(got, "vaultmcp recover") {
+			t.Fatalf("got %q", got)
+		}
+	})
+	t.Run("no key.enc: the recovery code is the way", func(t *testing.T) {
+		v, _ := keychainVault(t)
+		if err := keyring.DeleteFromKeychain(); err != nil {
+			t.Fatal(err)
+		}
+		got := hookSays(t, v.p, claudeEvent, testNow)
+		if !strings.Contains(got, "vaultmcp recover") || strings.Contains(got, "vaultmcp unlock") {
+			t.Fatalf("got %q", got)
+		}
+	})
+}
+
+// With nobody at a terminal the offer cannot be made. unlock says so, and
+// says where to run it, in place of ending without a word about the keychain.
+func TestUnlockSaysWhereTheOfferCanBeMade(t *testing.T) {
+	envVault(t)
+	terminal(t, false)
+	var err error
+	stdout, _ := output(t, func() { err = cmdUnlock(nil) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout, "at a terminal") {
+		t.Fatalf("stdout = %q", stdout)
+	}
+	if _, ok := keyring.FromKeychain(); ok {
+		t.Fatal("the key went into the keychain with nobody asked")
+	}
+}
+
+// unlock run where VAULTMCP_KEY is set ends a lock left for other programs,
+// and says that it did.
+func TestUnlockWithTheVariableSaysItEndedALock(t *testing.T) {
+	v := envVault(t)
+	terminal(t, false)
+	if err := writeLockMarker(v.p); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	stdout, _ := output(t, func() { err = cmdUnlock(nil) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout, "the lock is ended") || strings.Contains(stdout, "nothing to unlock") {
+		t.Fatalf("stdout = %q", stdout)
+	}
+	if fileExists(v.p.Locked) {
+		t.Fatal("the marker is still there")
+	}
+}
