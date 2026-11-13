@@ -998,75 +998,7 @@ func TestEnvPassphraseDoesNotReplaceAKeychainKey(t *testing.T) {
 	}
 }
 
-// In keychain mode the keychain entry is the key itself, not a cached copy.
-// `lock` removes it only when key.enc is shown to hold the same key.
-func TestLockKeepsTheOnlyCopyOfTheKey(t *testing.T) {
-	useMockKeychain(t)
-	v := newTestVault(t)
-	if err := cmdSet([]string{"MINE", "value-one"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := cmdLock(nil); err == nil || !strings.Contains(err.Error(), "only copy") {
-		t.Fatalf("lock err = %v, want a refusal", err)
-	}
-	key, ok := keyring.FromKeychain()
-	if !ok {
-		t.Fatal("lock deleted the only copy of the master key")
-	}
-	if got, err := resolve(v.p, key, "MINE", testNow); err != nil || got != "value-one" {
-		t.Fatalf("the stored secret no longer opens after a refused lock: %v", err)
-	}
-
-	// A key.enc that holds ANOTHER key is no copy. This is the vault an
-	// earlier version left behind when VAULTMCP_KEY was set on a keychain
-	// vault: the good key must stay.
-	if err := keyring.WrapToFile(v.p.Key, crypto.NewKey(), "a passphrase"); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("VAULTMCP_KEY", "a passphrase")
-	if err := cmdLock(nil); err == nil || !strings.Contains(err.Error(), "different key") {
-		t.Fatalf("lock beside a key.enc with another key: err = %v, want a refusal", err)
-	}
-	// A key.enc that cannot be opened proves nothing.
-	t.Setenv("VAULTMCP_KEY", "not the passphrase")
-	if err := cmdLock(nil); err == nil || !strings.Contains(err.Error(), "did not open") {
-		t.Fatalf("lock beside a key.enc that does not open: err = %v, want a refusal", err)
-	}
-	if _, ok := keyring.FromKeychain(); !ok {
-		t.Fatal("lock deleted a key that key.enc did not hold")
-	}
-
-	// With the same key in key.enc, the keychain entry is a spare copy and
-	// lock clears it.
-	if err := keyring.WrapToFile(v.p.Key, key, "a passphrase"); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("VAULTMCP_KEY", "a passphrase")
-	if err := cmdLock(nil); err != nil {
-		t.Fatalf("lock with the same key in key.enc: %v", err)
-	}
-	if _, ok := keyring.FromKeychain(); ok {
-		t.Fatal("lock did not clear the keychain copy")
-	}
-}
-
-// The keychain entry is one per user, not one per vault folder. Pointing
-// VAULTMCP_DIR at an empty folder must not let `lock` delete the key that
-// seals the vault in another folder.
-func TestLockInAnEmptyFolderKeepsTheSharedKey(t *testing.T) {
-	useMockKeychain(t)
-	newTestVault(t)
-	if err := cmdSet([]string{"MINE", "value-one"}); err != nil {
-		t.Fatal(err)
-	}
-	newTestVault(t) // VAULTMCP_DIR now names another, empty folder
-	if err := cmdLock(nil); err == nil || !strings.Contains(err.Error(), "only copy") {
-		t.Fatalf("lock from an empty folder: err = %v, want a refusal", err)
-	}
-	if _, ok := keyring.FromKeychain(); !ok {
-		t.Fatal("lock from an empty folder deleted the key of another vault")
-	}
-}
+// Lock, unlock and the recovery code are covered in lock_test.go.
 
 // A captures folder that cannot be listed may hold captures. `set` must not
 // take "could not look" for "nothing there" and make a new key.

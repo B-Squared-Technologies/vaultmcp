@@ -66,6 +66,10 @@ type Deps struct {
 	// be empty.
 	Session string
 	Cwd     string
+	// StoreFailed, when set, is called if the named store does not open with
+	// MasterKey. Process then emits nothing, as for any failure, and the
+	// caller can tell that apart from "nothing to redact".
+	StoreFailed func()
 }
 
 type envelope struct {
@@ -74,6 +78,7 @@ type envelope struct {
 	ToolInput json.RawMessage
 	ToolResp  json.RawMessage
 	Cursor    bool
+	Grok      bool
 	Session   string
 	Cwd       string
 }
@@ -170,6 +175,11 @@ func parseEnvelope(stdin []byte) (envelope, bool) {
 	if env.Event == "" {
 		return envelope{}, false
 	}
+	// Grok sends camelCase keys (beside the snake_case event name); Claude
+	// and Codex send snake_case only; Cursor is known by its event names.
+	_, camelTool := raw["toolName"]
+	_, camelEvent := raw["hookEventName"]
+	env.Grok = !env.Cursor && (camelTool || camelEvent)
 	return env, true
 }
 
@@ -319,6 +329,7 @@ func (d Deps) preToolUse(env envelope) []byte {
 	}
 	store, err := vault.Load(d.Paths.Store, d.MasterKey)
 	if err != nil {
+		d.storeFailed()
 		return nil // fail open
 	}
 	text := string(env.ToolInput)
@@ -417,6 +428,7 @@ func (d Deps) postToolUse(env envelope) []byte {
 	}
 	store, err := vault.Load(d.Paths.Store, d.MasterKey)
 	if err != nil {
+		d.storeFailed()
 		return nil
 	}
 	// Claude Code validates updatedToolOutput against the tool's OWN output
@@ -504,4 +516,82 @@ func leaks(text string, secrets []string) bool {
 		}
 	}
 	return false
+}
+
+func (d Deps) storeFailed() {
+	if d.StoreFailed != nil {
+		d.StoreFailed()
+	}
+}
+
+// claudeDenyOutput is the documented PreToolUse denial for Claude, Codex and
+// Grok. It carries nothing but the decision and its reason: an extra root
+// field one of them does not know could get the whole answer rejected, and a
+// rejected answer lets the tool call through.
+type claudeDenyOutput struct {
+	HookSpecificOutput struct {
+		HookEventName            string `json:"hookEventName"`
+		PermissionDecision       string `json:"permissionDecision"`
+		PermissionDecisionReason string `json:"permissionDecisionReason"`
+	} `json:"hookSpecificOutput"`
+}
+
+type cursorDenyOutput struct {
+	Permission   string `json:"permission"`
+	UserMessage  string `json:"user_message"`
+	AgentMessage string `json:"agent_message"`
+}
+
+// Stop returns the hook answer that denies the tool call in stdin, with
+// reason as the message. It answers only a PreToolUse event: a call that has
+// already run cannot be stopped, and for anything else it returns nil.
+//
+// This is the one place the hook ever blocks. The caller uses it only for a
+// vault its owner locked on purpose.
+func Stop(stdin []byte, reason string) []byte {
+	env, ok := parseEnvelope(stdin)
+	if !ok || env.Event != "PreToolUse" {
+		return nil
+	}
+	var out any
+	if env.Cursor {
+		out = cursorDenyOutput{Permission: "deny", UserMessage: reason, AgentMessage: reason}
+	} else {
+		var deny claudeDenyOutput
+		deny.HookSpecificOutput.HookEventName = "PreToolUse"
+		deny.HookSpecificOutput.PermissionDecision = "deny"
+		deny.HookSpecificOutput.PermissionDecisionReason = reason
+		out = deny
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+// SessionID returns the agent session the hook event in stdin belongs to, or
+// "" if it names none.
+func SessionID(stdin []byte) string {
+	env, _ := parseEnvelope(stdin)
+	return env.Session
+}
+
+// Warn returns a hook answer that lets the tool call in stdin go ahead and
+// shows msg to the person at the screen. Claude and Codex document a field
+// for that on PreToolUse. Grok shows nothing from a hook that allowed, and
+// Cursor has no documented field and blocks the call on an answer it does not
+// know, so for those two, and for every other event, it returns nil.
+func Warn(stdin []byte, msg string) []byte {
+	env, ok := parseEnvelope(stdin)
+	if !ok || env.Event != "PreToolUse" || env.Cursor || env.Grok {
+		return nil
+	}
+	b, err := json.Marshal(struct {
+		SystemMessage string `json:"systemMessage"`
+	}{msg})
+	if err != nil {
+		return nil
+	}
+	return b
 }

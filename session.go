@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"os"
@@ -27,33 +26,6 @@ func holdsSecrets(p vault.Paths) bool {
 	return fileExists(p.Store) || captures > 0 || err != nil
 }
 
-// keyHasFileCopy returns nil only when key.enc in this vault folder holds the
-// same master key as the keychain entry, which is what makes that entry safe
-// to remove. Whether this folder holds secrets is deliberately not asked: the
-// keychain entry is one per user, shared by every vault folder, so an empty
-// folder here says nothing about what the key seals elsewhere. A key.enc that
-// merely exists is not enough either: it can hold another key.
-func keyHasFileCopy(p vault.Paths, inKeychain []byte) error {
-	if !fileExists(p.Key) {
-		return fmt.Errorf("the OS keychain holds the only copy of the master key: there is no key.enc in %s. Every vault folder of this user shares that keychain entry, and removing it would make whatever it sealed unreadable for good, so nothing was changed. If you are certain nothing uses it, delete the %q entry in the OS keychain by hand", p.Dir, "vaultmcp")
-	}
-	pass := os.Getenv("VAULTMCP_KEY")
-	if pass == "" {
-		var err error
-		if pass, err = passphrase("Passphrase for key.enc: ", false); err != nil {
-			return errors.New("key.enc could not be checked against the key in the OS keychain without its passphrase, so nothing was changed")
-		}
-	}
-	inFile, err := keyring.UnwrapFromFile(p.Key, pass)
-	if err != nil {
-		return errors.New("key.enc did not open with that passphrase, so it could not be confirmed as a copy of the key in the OS keychain. Nothing was changed")
-	}
-	if subtle.ConstantTimeCompare(inFile, inKeychain) != 1 {
-		return fmt.Errorf("key.enc in %s holds a different key from the one in the OS keychain. Removing the keychain entry would make whatever it sealed unreadable for good, so nothing was changed", p.Dir)
-	}
-	return nil
-}
-
 // refuseNewKey is the error for a `set` that would have had to make a new
 // master key over a vault that already holds secrets. A new key opens none of
 // them, and once stored it is the key every later command finds first, which
@@ -74,7 +46,8 @@ func refuseNewKey(p vault.Paths, why, fix string) error {
 //  2. OS keychain       -> the stored master key.
 //  3. key.enc on disk   -> prompt for the passphrase and unwrap.
 //  4. first use         -> mint a key; keychain if usable, else passphrase file.
-//     Refused when the vault already holds secrets.
+//     Refused when the vault already holds secrets. A new key gets its
+//     recovery code at once: see offerRecovery.
 func masterKeyInteractive(p vault.Paths, create bool) ([]byte, error) {
 	if env := os.Getenv("VAULTMCP_KEY"); env != "" {
 		return masterKeyFromPassphrase(p, env, create)
@@ -83,7 +56,7 @@ func masterKeyInteractive(p vault.Paths, create bool) ([]byte, error) {
 		return k, nil
 	}
 	if fileExists(p.Key) {
-		pass, err := passphrase("Passphrase: ", false)
+		pass, err := askSecret("Passphrase: ", false)
 		if err != nil {
 			return nil, err
 		}
@@ -105,6 +78,7 @@ func masterKeyInteractive(p vault.Paths, create bool) ([]byte, error) {
 	k := crypto.NewKey()
 	if keyring.Available() {
 		if err := keyring.ToKeychain(k); err == nil {
+			offerRecovery(p, k)
 			return k, nil
 		}
 		// Available() probed true but the write still failed (e.g. a locked
@@ -113,13 +87,14 @@ func masterKeyInteractive(p vault.Paths, create bool) ([]byte, error) {
 	} else {
 		fmt.Fprintln(os.Stderr, "  No OS keychain available — using passphrase mode.")
 	}
-	pass, err := passphrase("Create passphrase: ", true)
+	pass, err := askSecret("Create passphrase: ", true)
 	if err != nil {
 		return nil, errors.New("cannot prompt for a passphrase here — set VAULTMCP_KEY for headless use")
 	}
 	if err := keyring.WrapToFile(p.Key, k, pass); err != nil {
 		return nil, err
 	}
+	offerRecovery(p, k)
 	return k, nil
 }
 
@@ -146,6 +121,7 @@ func masterKeyFromPassphrase(p vault.Paths, pass string, create bool) ([]byte, e
 	if err := keyring.WrapToFile(p.Key, k, pass); err != nil {
 		return nil, err
 	}
+	offerRecovery(p, k)
 	return k, nil
 }
 

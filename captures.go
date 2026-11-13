@@ -1,10 +1,13 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -37,8 +40,37 @@ func captureKey(master []byte) (key []byte, locked bool) {
 func runHook(stdin []byte, stdout io.Writer, p vault.Paths, now time.Time) {
 	key, err := masterKeyNonInteractive(p)
 	if err != nil {
-		// Locked and non-interactive: cannot vault now. Fail open silently so
-		// we never block the tool call. (status/unlock guide the user.)
+		// No key, so nothing can be vaulted. What the hook says depends on
+		// why. The key is always tried first: a key that can be reached wins
+		// over any marker.
+		switch {
+		case fileExists(p.Locked):
+			// Locked on purpose. The owner wants nothing near the secrets, and
+			// an agent running with redaction off is the opposite, so the
+			// call is stopped. The hook blocks only for a vault that was
+			// locked on purpose and whose key it cannot use.
+			write(stdout, hook.Stop(stdin, lockedMessage))
+		case fileExists(p.Key) || holdsSecrets(p):
+			// A vault that is in use, but its key is out of reach (a keychain
+			// this session cannot see, a passphrase that was not exported).
+			// The call goes ahead, and the person is told why here: `status`
+			// run in a terminal that does have the passphrase would say that
+			// all is well.
+			why := "this session has no VAULTMCP_KEY and no vault key was found in the OS keychain"
+			if os.Getenv("VAULTMCP_KEY") != "" {
+				why = "VAULTMCP_KEY is set in this session but does not open key.enc"
+			}
+			warn(stdout, stdin, p, now, "VaultMCP cannot reach the vault key ("+why+"), so secrets are NOT being hidden.")
+		}
+		// Otherwise the vault was never set up: nothing to say.
+		return
+	}
+	// A vault locked on purpose stays stopped unless the key that was found is
+	// its own. The keychain entry is one per user, so another vault folder's
+	// key may be in it, and another vault being open must not undo this lock.
+	// The extra look at the store happens only while a marker is there.
+	if fileExists(p.Locked) && !opensStore(p, key) {
+		write(stdout, hook.Stop(stdin, lockedMessage))
 		return
 	}
 	exe, err := os.Executable()
@@ -50,14 +82,67 @@ func runHook(stdin []byte, stdout io.Writer, p vault.Paths, now time.Time) {
 		k, _ := captureKey(key)
 		return k
 	})
-	out := hook.Process(stdin, hook.Deps{Paths: p, MasterKey: key, CaptureKey: capKey, ExePath: exe, Now: now})
-	if out != nil {
-		_, _ = stdout.Write(out)
+	storeFailed := false
+	out := hook.Process(stdin, hook.Deps{Paths: p, MasterKey: key, CaptureKey: capKey, ExePath: exe, Now: now, StoreFailed: func() { storeFailed = true }})
+	write(stdout, out)
+	if storeFailed {
+		// A key was found, but it is not this vault's, and nobody locked the
+		// vault: the keychain holds another folder's key, or VAULTMCP_KEY
+		// opens a key.enc that was made over an existing vault. Process
+		// answers nothing when the store fails, so this is the only answer.
+		warn(stdout, stdin, p, now, "VaultMCP found a key, but it does not open this vault (store.enc), so secrets are NOT being hidden. Run 'vaultmcp status' in a terminal.")
 	}
 	// Expire old captures, at most once a day. Only now, with the answer
 	// already written: what AutoPrune returns goes to the audit log and
 	// nowhere else, so it cannot change the output or the exit code.
 	auditPrune(p, capture.AutoPrune(p.Captured, capKey, now), "hook", now)
+}
+
+func write(w io.Writer, out []byte) {
+	if out != nil {
+		_, _ = w.Write(out)
+	}
+}
+
+const lockedMessage = "VaultMCP: the vault is locked, so secrets cannot be hidden and this tool call was stopped. Run 'vaultmcp unlock' in a terminal, then try again."
+
+// warnEvery is how often the hook repeats a warning that redaction is off. It
+// runs on every tool call, and a warning on every one would be noise that
+// teaches people to ignore it.
+const warnEvery = 10 * time.Minute
+
+// warn shows msg to the person through the hook answer, at most once every
+// warnEvery in each agent session: a warning one session used up would
+// otherwise never reach the person sitting at another. The time of the last
+// warning is the mtime of a marker file in the vault folder. If that file
+// cannot be written the warning is shown anyway: said too often is better
+// than never said.
+func warn(w io.Writer, stdin []byte, p vault.Paths, now time.Time, msg string) {
+	marker := filepath.Join(p.Dir, "warned")
+	if id := hook.SessionID(stdin); id != "" {
+		sum := sha256.Sum256([]byte(id))
+		marker += "-" + hex.EncodeToString(sum[:6])
+	}
+	if fi, err := os.Stat(marker); err == nil {
+		if age := now.Sub(fi.ModTime()); age >= 0 && age < warnEvery {
+			return
+		}
+	}
+	out := hook.Warn(stdin, msg)
+	if out == nil {
+		return
+	}
+	if err := os.WriteFile(marker, nil, 0o600); err == nil {
+		_ = os.Chtimes(marker, now, now)
+	}
+	write(w, out)
+	// Sessions end and their markers stay. Clear out the day-old ones.
+	old, _ := filepath.Glob(filepath.Join(p.Dir, "warned-*"))
+	for _, f := range old {
+		if fi, err := os.Stat(f); err == nil && now.Sub(fi.ModTime()) > 24*time.Hour {
+			_ = os.Remove(f)
+		}
+	}
 }
 
 // auditPrune leaves one audit line for a prune that deleted something. Expiry
@@ -214,7 +299,11 @@ func writePruneResult(w io.Writer, r capture.PruneResult, dryRun bool) {
 // still be counted, and whether they are locked to this machine needs no key.
 func writeVaultCounts(w io.Writer, p vault.Paths, master []byte) {
 	if master != nil {
-		if store, err := vault.Load(p.Store, master); err == nil {
+		store, err := vault.Load(p.Store, master)
+		if err != nil {
+			fmt.Fprintln(w, "  named:   WARNING: a key was found, but it does not open store.enc, so secrets are not being hidden.")
+			fmt.Fprintln(w, "           The OS keychain may hold another vault folder's key, or VAULTMCP_KEY may not be this vault's passphrase.")
+		} else {
 			fmt.Fprintf(w, "  named:   %d secret(s)\n", len(store))
 			// Only what the migration would really move is counted. A name
 			// that merely looks generated (a person's own STRIPE_KEY) stays

@@ -2,7 +2,8 @@
 //
 // Two modes (see PLAN):
 //   - Keychain mode (default): the master key lives in the OS keychain via
-//     go-keyring. Nothing secret touches disk; the per-tool-call hook fetches
+//     go-keyring. The key is on disk only in sealed form (recovery.enc, and
+//     key.enc once the vault has been locked); the per-tool-call hook fetches
 //     it directly with no Argon2id cost.
 //   - Passphrase mode (fallback): the master key is wrapped by an Argon2id KEK
 //     and stored in key.enc. The passphrase itself is never written to disk.
@@ -12,6 +13,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"os"
+	"path/filepath"
 
 	"github.com/B-Squared-Technologies/vaultmcp/internal/crypto"
 	zk "github.com/zalando/go-keyring"
@@ -76,7 +78,35 @@ func WrapToFile(keyPath string, master []byte, passphrase string) error {
 		return err
 	}
 	blob := append(append([]byte{}, salt...), sealed...)
-	return os.WriteFile(keyPath, blob, 0o600)
+	return writeWhole(keyPath, blob)
+}
+
+// writeWhole puts data at path so that a reader, or a crash, finds the old
+// file or the new one and never half of either: a temp file beside it, synced
+// to disk, then renamed into place. A key file cut short is a lost key.
+func writeWhole(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(tmp, 0o600)
+	}
+	if err == nil {
+		err = os.Rename(tmp, path)
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+	}
+	return err
 }
 
 // UnwrapFromFile reverses WrapToFile. Returns crypto.ErrDecrypt on a wrong

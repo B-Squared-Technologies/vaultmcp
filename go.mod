@@ -13,3 +13,6 @@ require (
 	github.com/zalando/go-keyring v0.2.8 // indirect
 	golang.org/x/term v0.44.0 // indirect
 )
+
+// `vaultmcp lock` deleted the only copy of the vault key in the default setup. Use v0.2.0 or later.
+retract [v0.1.0, v0.1.3]

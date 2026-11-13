@@ -3,6 +3,7 @@ package hook
 import (
 	"bytes"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -608,5 +609,49 @@ func TestSecretInAQuotedShellCommandStartsAsUsed(t *testing.T) {
 	}
 	if !capture.Exists(d.Paths.Captured, awsAlias(d)) {
 		t.Fatal("a capture nothing could read, taken out of a shell command, was deleted after a week")
+	}
+}
+
+// Stop and Warn answer in the form each agent tool documents, and say nothing
+// where a tool has no documented form.
+func TestStopAndWarnPerAgentTool(t *testing.T) {
+	const (
+		claude = `{"hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"/x"}}`
+		grok   = `{"hookEventName":"pre_tool_use","hook_event_name":"PreToolUse","toolName":"Read","toolInput":{"file_path":"/x"}}`
+		cursor = `{"hook_event_name":"preToolUse","tool_name":"Read","tool_input":{"file_path":"/x"}}`
+		post   = `{"hook_event_name":"PostToolUse","tool_name":"Read","tool_response":"text"}`
+	)
+	for name, in := range map[string]string{"claude": claude, "grok": grok} {
+		var got map[string]map[string]string
+		if err := json.Unmarshal(Stop([]byte(in), "why"), &got); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		h := got["hookSpecificOutput"]
+		if len(got) != 1 || h["hookEventName"] != "PreToolUse" || h["permissionDecision"] != "deny" || h["permissionDecisionReason"] != "why" {
+			t.Errorf("%s: deny must be hookSpecificOutput and nothing else, got %v", name, got)
+		}
+	}
+	var c map[string]string
+	if err := json.Unmarshal(Stop([]byte(cursor), "why"), &c); err != nil {
+		t.Fatal(err)
+	}
+	if len(c) != 3 || c["permission"] != "deny" || c["user_message"] != "why" || c["agent_message"] != "why" {
+		t.Errorf("cursor deny: %v", c)
+	}
+	for name, in := range map[string]string{"a finished call": post, "not json": "nope", "no event": `{"tool_name":"Read"}`} {
+		if out := Stop([]byte(in), "why"); out != nil {
+			t.Errorf("Stop answered %s: %s", name, out)
+		}
+		if out := Warn([]byte(in), "msg"); out != nil {
+			t.Errorf("Warn answered %s: %s", name, out)
+		}
+	}
+	if got := string(Warn([]byte(claude), "msg")); got != `{"systemMessage":"msg"}` {
+		t.Errorf("claude warn: %s", got)
+	}
+	for name, in := range map[string]string{"grok": grok, "cursor": cursor} {
+		if out := Warn([]byte(in), "msg"); out != nil {
+			t.Errorf("%s has no documented warning, got %s", name, out)
+		}
 	}
 }
