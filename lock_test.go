@@ -1097,7 +1097,9 @@ func TestUnlockSaysSoWhenTheMarkerCannotBeRemoved(t *testing.T) {
 // With no lines given, any question asked fails the test.
 func types(t *testing.T, lines ...string) {
 	t.Helper()
-	old := typedLine
+	old, oldStdin := typedLine, stdinIsTerminal
+	stdinIsTerminal = func() bool { return true }
+	t.Cleanup(func() { stdinIsTerminal = oldStdin })
 	n := 0
 	typedLine = func() (string, bool) {
 		if n >= len(lines) {
@@ -1217,8 +1219,12 @@ func TestUnlockOfferNeedsAPerson(t *testing.T) {
 		oldStdin := os.Stdin
 		os.Stdin = r
 		t.Cleanup(func() { os.Stdin = oldStdin; _ = r.Close() })
-		if err := cmdUnlock(nil); err != nil {
+		_, stderr := output(t, func() { err = cmdUnlock(nil) })
+		if err != nil {
 			t.Fatal(err)
+		}
+		if strings.Contains(stderr, "[y/N]") {
+			t.Fatalf("the question was asked with nobody able to answer it: %q", stderr)
 		}
 		if _, ok := keyring.FromKeychain(); ok {
 			t.Fatal("unlock took piped input for a typed yes")

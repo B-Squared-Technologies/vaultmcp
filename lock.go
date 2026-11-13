@@ -201,21 +201,22 @@ func endLock(p vault.Paths) error {
 	return err
 }
 
-// typedLine reads one line a person types at the terminal. It reports false
-// when stdin is not a terminal, so text piped in by a script is never taken
-// for an answer. A variable only so tests can stand in for the person.
-var typedLine = func() (string, bool) {
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return "", false
+// stdinIsTerminal and typedLine are variables only so tests can stand in for
+// the person at the keyboard.
+var (
+	stdinIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+	typedLine       = func() (string, bool) {
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		return line, err == nil
 	}
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-	return line, err == nil
-}
+)
 
 // askYesNo puts a question to the person at the terminal. Anything but a
-// typed y or yes is a no, and so is nobody being there to ask.
+// typed y or yes is a no. With nobody there it asks nothing and the answer is
+// no: the question has to be seen (stderr) and the answer typed (stdin), so
+// text piped in by a script is never taken for an answer.
 func askYesNo(question string) bool {
-	if !atTerminal() {
+	if !atTerminal() || !stdinIsTerminal() {
 		return false
 	}
 	fmt.Fprint(os.Stderr, "  "+question+" [y/N] ")
