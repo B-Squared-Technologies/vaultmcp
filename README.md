@@ -38,7 +38,7 @@ You can paste the JSON by hand instead of using `install`. The hook needs no arg
 - Grok treats `PostToolUse` as passive: hook stdout is recorded but does not replace the result shown to the model. `cat .env` still reaches Grok; rely on Pre rewrite.
 - Codex PostToolUse cannot rewrite tool results (`updatedToolOutput` is not in the schema). Only PreToolUse is registered. Codex hooks can also be off (`[features] hooks = false`) or waiting on `/hooks` trust.
 - Fail-open: if VaultMCP errors, the tool call proceeds untouched. The one exception is a vault you locked yourself with `vaultmcp lock`: then every tool call is stopped until `vaultmcp unlock`.
-- When the hook cannot reach the vault key and nobody locked the vault (for example an app that never loaded `VAULTMCP_KEY` from your shell profile), secrets are not hidden. Claude and Codex show a warning that says why and names the fix (`vaultmcp unlock`, which puts the key in the OS keychain), at most once every 10 minutes in each session. Grok and Cursor have no documented way for a hook to show a warning on a call it allows, so there the hook stays silent: run `vaultmcp status` if in doubt.
+- When the hook cannot reach the vault key and nobody locked the vault (for example an app that never loaded `VAULTMCP_KEY` from your shell profile), secrets are not hidden. The fix, on any system with an OS keychain: run `vaultmcp unlock` in a terminal and put the key in the keychain, where every app can reach it. Claude and Codex show a warning that says why and names that fix, at most once every 10 minutes in each session. Grok and Cursor have no documented way for a hook to show a warning on a call it allows, so there the hook stays silent: run `vaultmcp status` if in doubt.
 
 ## How it works
 
