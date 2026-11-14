@@ -173,6 +173,8 @@ captures are sealed with a key derived from it.
   apart by a lock. Each one checks the keychain again just before it
   changes it and stages its files under its own name, which leaves a gap
   of milliseconds. Run them one at a time.
+- Cursor support has not been run in a live Cursor. It is written from
+  Cursor's hook documentation and checked only by this project's tests.
 - Grok and Cursor give a hook no documented way to show a warning on a
   call it allows. When the key is out of reach there, the hook is silent.
 - Codex accepts the warning for a key that is out of reach, but

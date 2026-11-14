@@ -4,6 +4,8 @@ Keep credentials out of coding-agent transcripts. VaultMCP is a single Go binary
 
 Works with **Claude Code, Grok, Codex, and Cursor**. One static binary, no runtime dependencies. macOS, Linux, and Windows. The Go toolchain is needed only to build it.
 
+Cursor support has not been tested in a live Cursor. See [Limits](#limits).
+
 ## Install
 
 ```bash
@@ -34,6 +36,7 @@ You can paste the JSON by hand instead of using `install`. The hook needs no arg
 
 ## Limits
 
+- Cursor is not tested live. The hook's Cursor input and output shapes are written from Cursor's hook documentation and checked only by this project's own tests. The 0.2.0 build has not been run inside Cursor, so treat it as unproven until you have seen it hide a secret there. Claude Code, Grok and Codex were each run live, headless, with the 0.2.0 build.
 - Cursor `afterShellExecution` has no documented way to rewrite what the model sees. Pre-rewrite still works. Post-redact of `cat .env` may not stick in Cursor.
 - Grok treats `PostToolUse` as passive: hook stdout is recorded but does not replace the result shown to the model. `cat .env` still reaches Grok; rely on Pre rewrite.
 - Codex PostToolUse cannot rewrite tool results (`updatedToolOutput` is not in the schema). Only PreToolUse is registered. Codex hooks can also be off (`[features] hooks = false`) or waiting on `/hooks` trust. Either way Codex runs the tool call without the hook and gives no message.
