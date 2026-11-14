@@ -182,6 +182,12 @@ captures are sealed with a key derived from it.
   Codex session is unconfirmed.
 - Codex skips a new or changed hook, with no message, until it is approved
   in Codex `/hooks`.
+- Codex runs shell commands in a sandbox that cannot read the macOS
+  keychain. With the key only in the keychain, the hook still hides a
+  secret, but the command that should fetch it gets an empty value. Give
+  Codex's shell `VAULTMCP_KEY` as well. It holds the passphrase for
+  `key.enc`, and a keychain-only vault has no `key.enc` until its first
+  `vaultmcp lock`, which has to be run before the variable is set.
 - The OS keychain holds one VaultMCP key per user, not one per vault
   folder.
 - "A person at the terminal" means stderr is a terminal. An agent's shell
