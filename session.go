@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/B-Squared-Technologies/vaultmcp/internal/capture"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/crypto"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/keyring"
 	"github.com/B-Squared-Technologies/vaultmcp/internal/vault"
@@ -14,8 +15,29 @@ import (
 // errLocked is returned when no master key is reachable without prompting.
 var errLocked = errors.New("vault is locked")
 
+// holdsSecrets reports whether the vault folder already has something sealed
+// in it: store.enc, or at least one capture file. Whatever is there was
+// sealed under a master key that already exists somewhere, so a new key must
+// not be made over it.
+func holdsSecrets(p vault.Paths) bool {
+	// A captures folder that cannot be listed counts as holding secrets: not
+	// being able to look is no proof that nothing is there.
+	captures, err := capture.Count(p.Captured)
+	return fileExists(p.Store) || captures > 0 || err != nil
+}
+
+// refuseNewKey is the error for a `set` that would have had to make a new
+// master key over a vault that already holds secrets. A new key opens none of
+// them, and once stored it is the key every later command finds first, which
+// leaves the hook unable to read the store and redacting nothing. why says
+// where the existing key was looked for, fix how to bring it back.
+func refuseNewKey(p vault.Paths, why, fix string) error {
+	return fmt.Errorf("%s, but %s already holds secrets sealed with an earlier key. A new key would not open them, so none was created and nothing was changed. %s, or move the folder away to start an empty vault", why, p.Dir, fix)
+}
+
 // masterKeyInteractive resolves the master key, prompting if needed. Used by
 // CLI commands a human runs. On true first use it mints and persists a new key.
+// First use means an empty vault: see holdsSecrets.
 //
 // Resolution precedence:
 //  1. VAULTMCP_KEY env  -> passphrase mode, key.enc. NEVER touches the keychain.
@@ -24,6 +46,8 @@ var errLocked = errors.New("vault is locked")
 //  2. OS keychain       -> the stored master key.
 //  3. key.enc on disk   -> prompt for the passphrase and unwrap.
 //  4. first use         -> mint a key; keychain if usable, else passphrase file.
+//     Refused when the vault already holds secrets. A new key gets its
+//     recovery code at once: see offerRecovery.
 func masterKeyInteractive(p vault.Paths, create bool) ([]byte, error) {
 	if env := os.Getenv("VAULTMCP_KEY"); env != "" {
 		return masterKeyFromPassphrase(p, env, create)
@@ -32,7 +56,7 @@ func masterKeyInteractive(p vault.Paths, create bool) ([]byte, error) {
 		return k, nil
 	}
 	if fileExists(p.Key) {
-		pass, err := passphrase("Passphrase: ", false)
+		pass, err := askSecret("Passphrase: ", false)
 		if err != nil {
 			return nil, err
 		}
@@ -45,12 +69,16 @@ func masterKeyInteractive(p vault.Paths, create bool) ([]byte, error) {
 	if !create {
 		return nil, errLocked
 	}
+	if holdsSecrets(p) {
+		return nil, refuseNewKey(p, "no master key was found in the OS keychain and there is no key.enc", "Restore the keychain entry or key.enc")
+	}
 	if err := p.EnsureDir(); err != nil {
 		return nil, err
 	}
 	k := crypto.NewKey()
 	if keyring.Available() {
 		if err := keyring.ToKeychain(k); err == nil {
+			offerRecovery(p, k)
 			return k, nil
 		}
 		// Available() probed true but the write still failed (e.g. a locked
@@ -59,13 +87,14 @@ func masterKeyInteractive(p vault.Paths, create bool) ([]byte, error) {
 	} else {
 		fmt.Fprintln(os.Stderr, "  No OS keychain available — using passphrase mode.")
 	}
-	pass, err := passphrase("Create passphrase: ", true)
+	pass, err := askSecret("Create passphrase: ", true)
 	if err != nil {
 		return nil, errors.New("cannot prompt for a passphrase here — set VAULTMCP_KEY for headless use")
 	}
 	if err := keyring.WrapToFile(p.Key, k, pass); err != nil {
 		return nil, err
 	}
+	offerRecovery(p, k)
 	return k, nil
 }
 
@@ -82,6 +111,9 @@ func masterKeyFromPassphrase(p vault.Paths, pass string, create bool) ([]byte, e
 	if !create {
 		return nil, errLocked
 	}
+	if holdsSecrets(p) {
+		return nil, refuseNewKey(p, "VAULTMCP_KEY is set and there is no key.enc for it to open", "If the key is in the OS keychain, unset VAULTMCP_KEY; otherwise restore key.enc")
+	}
 	if err := p.EnsureDir(); err != nil {
 		return nil, err
 	}
@@ -89,6 +121,7 @@ func masterKeyFromPassphrase(p vault.Paths, pass string, create bool) ([]byte, e
 	if err := keyring.WrapToFile(p.Key, k, pass); err != nil {
 		return nil, err
 	}
+	offerRecovery(p, k)
 	return k, nil
 }
 

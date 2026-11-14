@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/B-Squared-Technologies/vaultmcp/internal/crypto"
@@ -61,5 +62,29 @@ func TestKeyFileNeverContainsRawMasterKey(t *testing.T) {
 	blob, _ := os.ReadFile(path)
 	if bytes.Contains(blob, master) {
 		t.Fatal("raw master key found in key.enc — wrapping failed")
+	}
+}
+
+// A key file is replaced in one piece and leaves no temp file behind.
+func TestWrapToFileReplacesInOnePiece(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "key.enc")
+	first, second := crypto.NewKey(), crypto.NewKey()
+	if err := WrapToFile(path, first, "one passphrase"); err != nil {
+		t.Fatal(err)
+	}
+	if err := WrapToFile(path, second, "two passphrase"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := UnwrapFromFile(path, "two passphrase")
+	if err != nil || string(got) != string(second) {
+		t.Fatalf("the second write is not what is on disk: %v", err)
+	}
+	des, _ := os.ReadDir(dir)
+	if len(des) != 1 {
+		t.Fatalf("temp files left beside the key file: %d entries", len(des))
+	}
+	if fi, _ := os.Stat(path); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
+		t.Fatalf("key file mode %v, want 0600", fi.Mode().Perm())
 	}
 }

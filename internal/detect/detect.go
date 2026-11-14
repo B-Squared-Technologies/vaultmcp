@@ -27,6 +27,24 @@ type pattern struct {
 	kind string
 }
 
+// entropyKind is the type reported for a hit of the entropy scan.
+const entropyKind = "high_entropy_secret"
+
+// Kinds returns every credential type Find can report, each once. It is the
+// single source of truth for what a hook-generated alias can be named after,
+// so the capture migration never keeps its own copy of this list.
+func Kinds() []string {
+	out := []string{entropyKind}
+	seen := map[string]bool{entropyKind: true}
+	for _, p := range known {
+		if !seen[p.kind] {
+			seen[p.kind] = true
+			out = append(out, p.kind)
+		}
+	}
+	return out
+}
+
 // Go's regexp (RE2) has no backreferences but covers everything needed here.
 var known = []pattern{
 	{regexp.MustCompile(`AKIA[0-9A-Z]{16}`), "aws_access_key"},
@@ -298,7 +316,7 @@ func Find(text string) []Match {
 			continue
 		}
 		if shannonEntropy(val) >= entropyThreshold {
-			out = append(out, Match{Value: val, Type: "high_entropy_secret"})
+			out = append(out, Match{Value: val, Type: entropyKind})
 			seen[val] = true
 		}
 	}

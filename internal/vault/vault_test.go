@@ -107,4 +107,13 @@ func TestVaultDirEnvOverride(t *testing.T) {
 	if p.Dir != dir {
 		t.Fatalf("VAULTMCP_DIR ignored: got %s want %s", p.Dir, dir)
 	}
+	// Every file the vault writes must follow the override, captures included.
+	for _, got := range []string{p.Store, p.Key, p.Meta, p.Audit, p.Captured} {
+		if filepath.Dir(got) != dir {
+			t.Fatalf("path %s is not inside VAULTMCP_DIR %s", got, dir)
+		}
+	}
+	if p.Captured != filepath.Join(dir, "captured") {
+		t.Fatalf("Captured = %s, want %s", p.Captured, filepath.Join(dir, "captured"))
+	}
 }

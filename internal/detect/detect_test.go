@@ -248,7 +248,8 @@ func TestDottedConfigFilenameNotFlagged(t *testing.T) {
 // merely straddles a line break (or sits in a markdown code span) gets vaulted
 // and a Write corrupts the file on disk.
 func TestJSONEscapedNewlineSplitsTokens(t *testing.T) {
-	// As seen inside a Write tool_input: **Date:** [vault:HIGH_ENTROPY_SECRET_3533] …
+	// As seen inside a Write tool_input: a bold "Date:" line, the date, then
+	// the two-byte escaped newline and a bold "Status:" heading.
 	text := `**Date:** 2026-07-27` + `\` + `n**Status:** Approved approach`
 	if got := Find(text); len(got) != 0 {
 		t.Fatalf("JSON-escaped newline span flagged: %+v", got)
@@ -330,5 +331,26 @@ func TestTwoSegmentSecretStillCaught(t *testing.T) {
 	sec := "Xq9vR2mT7wL4pK8n" + "Z5jB.3cF6dG1hA0s" + "EbTqW9xYzK2mPd4r"
 	if got := Find("key " + sec + " end"); len(got) == 0 {
 		t.Fatal("two-segment entropic secret no longer detected")
+	}
+}
+
+// Kinds is what the capture migration matches auto-generated names against,
+// so it must cover every type Find can report, with no duplicates.
+func TestKindsCoversEveryPattern(t *testing.T) {
+	kinds := Kinds()
+	seen := map[string]bool{}
+	for _, k := range kinds {
+		if seen[k] {
+			t.Errorf("kind %q listed twice", k)
+		}
+		seen[k] = true
+	}
+	for _, p := range known {
+		if !seen[p.kind] {
+			t.Errorf("known pattern kind %q missing from Kinds()", p.kind)
+		}
+	}
+	if !seen[entropyKind] {
+		t.Errorf("entropy kind %q missing from Kinds()", entropyKind)
 	}
 }
