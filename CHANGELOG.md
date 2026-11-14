@@ -184,8 +184,10 @@ captures are sealed with a key derived from it.
   in Codex `/hooks`.
 - Codex runs shell commands in a sandbox that cannot read the macOS
   keychain. With the key only in the keychain, the hook still hides a
-  secret, but the command that should fetch it gets an empty value. Set
-  `VAULTMCP_KEY` for Codex's shell as well.
+  secret, but the command that should fetch it gets an empty value. Give
+  Codex's shell `VAULTMCP_KEY` as well. It holds the passphrase for
+  `key.enc`, and a keychain-only vault has no `key.enc` until its first
+  `vaultmcp lock`.
 - The OS keychain holds one VaultMCP key per user, not one per vault
   folder.
 - "A person at the terminal" means stderr is a terminal. An agent's shell
